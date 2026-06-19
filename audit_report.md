@@ -1,6 +1,6 @@
 # Rapport d'audit — Sources de données (Coupe du Monde 2026)
 
-_Généré le 2026-06-19 14:45 par `recon.py`. Audit forensic neutre : aucune source n'est étiquetée avant examen ; le champ `trust` est un résultat calculé par les tests._
+_Généré le 2026-06-19 14:57 par `recon.py`. Audit forensic neutre : aucune source n'est étiquetée avant examen ; le champ `trust` est un résultat calculé par les tests._
 
 > Périmètre : **reconnaissance uniquement**. Aucun Elo, aucun modèle de buts, aucune probabilité, aucune logique de paris. On regarde la matière première.
 
@@ -13,17 +13,17 @@ Classé par fiabilité puis granularité. La colonne *couche* fait ressortir l'a
 | A_international_results | équipe | match | ✅ trusted | oui | matchs du 1872-11-30 au 2026-06-27 — inclut 192 match(s) de juin 2026 | faible |
 | D_statsbomb_open | joueur | event | 🟡 conditional | oui | CDM 2026 live ABSENTE (conforme : données historiques) | faible |
 | B_elo_ratings | équipe | team | 🟡 conditional | oui | snapshot courant de l'export (date exacte à confirmer côté site) | moyen (pauses imposées) |
+| G_the_odds_api | cotes-juge | odds | 🟡 conditional | oui | cotes temps réel pour les événements à venir cotés | moyen (clé + rate-limit) |
 | E_fbref_understat | joueur | player | ⬜ unverified | non | unknown | élevé (scraping/ToS) |
 | F_transfermarkt | joueur | player | ⬜ unverified | non | unknown | élevé (scraping/ToS) |
 | C_football_data_org | équipe | match | ⬜ unverified | non | non testée (pas de clé) | moyen (clé + rate-limit) |
-| G_the_odds_api | cotes-juge | odds | ⬜ unverified | non | non testée (pas de clé) | moyen (clé + rate-limit) |
 | H_quarantine | ? | unknown | ⬜ unverified | non | non testée (pas d'URL) | faible |
 
 ### Lecture par couche
 
 - **équipe** : A_international_results, B_elo_ratings.
 - **joueur** : D_statsbomb_open.
-- **cotes-juge** : aucune source exploitable.
+- **cotes-juge** : G_the_odds_api.
 - **?** : aucune source exploitable.
 
 ## Détail par source
@@ -134,18 +134,21 @@ Classé par fiabilité puis granularité. La colonne *couche* fait ressortir l'a
 
 ### G_the_odds_api
 
-- **Fiabilité (`trust`)** : ⬜ unverified
-- **Accès** : ÉCHEC · auth requise : oui
+- **Fiabilité (`trust`)** : 🟡 conditional
+- **Accès** : OK · auth requise : oui
 - **Granularité** : odds (cotes-juge)
-- **Rate-limit** : quota mensuel (tier gratuit ~500 req/mois)
-- **Fraîcheur** : non testée (pas de clé)
-- **Complétude** : unknown
-- **Réalisme** : unknown
-- **Couverture** : unknown
+- **Rate-limit** : quota mensuel ; restant=499, utilisés=1
+- **Fraîcheur** : cotes temps réel pour les événements à venir cotés
+- **Complétude** : 6 événements cotés
+- **Réalisme** : marchés présents=['h2h', 'h2h_lay'] ; 4 bookmakers
+- **Couverture** : 15 compétitions foot ; CDM détectée : True
 - **Coût de montée en charge** : gratuit plafonné au quota mensuel ; au-delà = paliers payants
+- **Schéma** (7 champs) : sport_key, commence_time, home_team, away_team, bookmakers[].title, markets[].key, outcomes[].price
 - **Notes** :
   - Usage : calibration uniquement (juge), pas de logique de paris.
-  - ODDS_API_KEY absente du .env -> probe non exécutable.
+  - clés CDM trouvées : ['cricket_t20_world_cup_womens', 'soccer_fifa_world_cup', 'soccer_fifa_world_cup_winner']
+  - bookmakers couverts (échantillon) : ['888sport', 'Betfair', 'Matchbook', 'William Hill']
+  - conditional : marchés foot exploitables comme juge, sous contrainte de quota mensuel.
 
 ### H_quarantine
 
