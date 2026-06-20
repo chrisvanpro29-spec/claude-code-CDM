@@ -72,3 +72,64 @@ Après `python recon.py`, `audit_report.md` permet de répondre sans ambiguïté
 pour chaque couche (équipe / joueur / cotes-juge) : **quelles sources sont
 fiables, à quelle granularité, et où sont les trous** — donc décider ce qui est
 quantifiable avant d'écrire la première ligne de modèle.
+
+---
+
+# Moteur de pronostics CDM 2026 (extension)
+
+Au-dessus de l'audit, un moteur produit des probabilités **calibrées** par match
+(1X2, over/under, score exact) et, par Monte Carlo, les probas de qualification /
+titre. Objectif : **égaler le marché et être bien calibré**, pas parier. Le marché
+(source G) est le juge.
+
+## Principes (non négociables)
+
+- **Traçabilité** : proba ← λ ← forces α/β (± tilt joueur) ← matchs pondérés. Pas
+  de boîte noire.
+- **Anti-fuite par construction** : toute donnée joueur passe par l'unique
+  fonction-porte `note_joueur(joueur, date_ref)` qui filtre `matchs[date < date_ref]`
+  en dur. Un test unitaire prouve qu'aucun match `>= date_ref` n'est jamais lu.
+- **Gel out-of-sample** : les matchs CDM 2026 ne fittent jamais la baseline équipe ;
+  ils sont le jeu de test, rejoué chronologiquement.
+- **Séparabilité** : la couche joueur est un interrupteur (`PLAYER_LAYER_ON`) + un
+  poids borné `w`. La validation tourne OFF puis ON sur les mêmes matchs.
+- **Pré-enregistrement** : tous les hyperparamètres sont figés dans `config.py`
+  AVANT de regarder le moindre Brier. Une seule passe de test.
+- **Pas de note fabriquée** : là où la donnée joueur manque, la couche se désactive
+  pour ce match (fallback équipe seule), et c'est signalé.
+
+## Architecture
+
+| Fichier | Rôle |
+|---|---|
+| `config.py` | TOUS les hyperparamètres pré-enregistrés |
+| `engine/team_model.py` | Module 1 — Dixon-Coles (MLE pondéré time-decay, gradient analytique) |
+| `engine/elo.py` | Elo recalculé depuis source A (cohérence, pas source des buts) |
+| `engine/league_strength.py` | Coefficients de force des ligues (§3.3) |
+| `engine/player_form.py` | Module 2 — fonction-porte `note_joueur` + agrégation (shrinkage, minutes) |
+| `engine/coupling.py` | Tilt borné des λ par les notes (interrupteur + poids) |
+| `engine/simulate.py` | Module 3 — Monte Carlo du tournoi (format réel 48 équipes) |
+| `validation/walk_forward.py` | Module 4 — replay chronologique, le juge |
+| `validation/metrics.py` | Brier, log-loss, reliability diagram |
+| `tests/` | anti-fuite (`test_no_lookahead`) + couplage (`test_coupling`) |
+
+## Utilisation
+
+```bash
+python recon.py                       # (prérequis) met results.csv en cache
+python -m validation.walk_forward     # le juge : Brier OFF vs ON + reliability + verdict
+python -m pytest tests/ -q            # garanties anti-fuite & bornes du couplage
+```
+
+Sorties dans `data/validation/` : `walk_forward_report.md`, `walk_forward.json`,
+`reliability.png`.
+
+## État dans cet environnement
+
+- **Baseline équipe** : fit OK (convergence propre), Brier 1X2 out-of-sample
+  ~0.58 sur les matchs CDM déjà joués — nettement mieux que l'uniforme (0.667).
+- **Couche joueur** : machinerie complète et testée, mais **inactive** faute de
+  données joueur (FBref/Understat indisponibles ici — cf. audit). Conformément au
+  principe « pas de note fabriquée », elle reste coupée et le rapport le dit.
+- **Vs marché** : nécessite des snapshots de cotes capturés *avant* chaque match
+  (the-odds-api ne renvoie pas de cotes rétroactives).
