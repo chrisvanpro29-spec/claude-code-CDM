@@ -24,7 +24,8 @@ import config
 from audit.paths import DATA_DIR
 from engine import data, coupling
 from engine.team_model import DixonColesModel
-from engine.player_form import PlayerMatchStore, SquadPlayer, team_notes
+from engine.player_form import (PlayerMatchStore, SquadPlayer, team_notes,
+                                ComponentNormalizer)
 from . import metrics
 
 OUT_DIR = DATA_DIR / "validation"
@@ -103,6 +104,19 @@ def run() -> dict:
     squads = load_squads()
     market = load_market_snapshots()
 
+    # Échelle des composantes ajustée UNE fois sur la population pré-tournoi (sans fuite).
+    normalizer = ComponentNormalizer.fit(store, config.NORMALIZER_FIT_CUTOFF)
+
+    # Référence ligue (centre du tilt) recalculée par date_ref, mise en cache.
+    ref_cache: dict[object, tuple] = {}
+
+    def reference_at(date_ref) -> tuple:
+        if date_ref not in ref_cache:
+            all_notes = [team_notes(sq, date_ref, store, normalizer)
+                         for sq in squads.values()]
+            ref_cache[date_ref] = coupling.league_reference(all_notes)
+        return ref_cache[date_ref]
+
     test = data.wc2026_matches(played_only=True)
     print(f"[walk-forward] {len(test)} matchs CDM 2026 joués à rejouer.")
 
@@ -122,9 +136,11 @@ def run() -> dict:
         p_off = model.match_probabilities(home, away, neutral, lambdas=(lam_h, lam_a))
 
         # Couche ON : notes équipe à date_ref (fenêtre glissante via note_joueur).
-        nh = team_notes(squads.get(home, []), date_ref, store) if squads else None
-        na = team_notes(squads.get(away, []), date_ref, store) if squads else None
-        lh2, la2, info = coupling.adjusted_lambdas(lam_h, lam_a, nh, na, layer_on=True)
+        nh = team_notes(squads.get(home, []), date_ref, store, normalizer) if squads else None
+        na = team_notes(squads.get(away, []), date_ref, store, normalizer) if squads else None
+        ref = reference_at(date_ref) if (nh is not None and na is not None) else None
+        lh2, la2, info = coupling.adjusted_lambdas(lam_h, lam_a, nh, na,
+                                                   ref=ref, layer_on=True)
         if info["layer_applied"]:
             layer_applied += 1
         p_on = model.match_probabilities(home, away, neutral, lambdas=(lh2, la2))

@@ -62,12 +62,27 @@ SHRINKAGE_K = 10
 # (brief §3.6 / §1.6 : pas de note fabriquée). En-dessous -> fallback équipe seule.
 MIN_PLAYERS_FOR_LAYER = 8
 
+# Standardisation des composantes (correction 3) : chaque composante est ramenée
+# en z-score (écarts-types à la moyenne de population) AVANT d'être combinée, avec
+# un poids par composante. Buts/xG plus lourds que les passes brutes. L'échelle est
+# ajustée une seule fois sur la population pré-tournoi (date < cutoff) -> sans fuite.
+COMPONENT_WEIGHTS = {
+    # attaque
+    "goals": 1.0, "xg": 1.0, "assists": 0.7, "xa": 0.7, "key_passes": 0.4, "chances_created": 0.4,
+    # milieu (key_passes déjà ci-dessus)
+    "prog_passes": 0.7, "recoveries": 0.6, "pass_pct_pressure": 0.5,
+    # défense
+    "tackles": 0.7, "interceptions": 0.7, "duels_won": 0.6, "clearances": 0.4, "xg_against": 1.0,
+}
+NORMALIZER_FIT_CUTOFF = WC2026_START     # échelle ajustée sur la population pré-tournoi
+
 # ---------------------------------------------------------------------------
 # Couplage — tilt borné (brief §4)
 # ---------------------------------------------------------------------------
 # λ_ajusté = λ_base * (1 + w * tilt), tilt centré (forme normale -> 0).
 PLAYER_TILT_WEIGHT = 0.15               # w : poids borné
 PLAYER_TILT_CLIP = 1.0                  # |tilt| <= 1 -> |variation λ| <= 15 %
+MID_TILT_WEIGHT = 0.5                   # κ : poids du différentiel de milieu (correction 2)
 
 # ---------------------------------------------------------------------------
 # Module 3 — Monte Carlo

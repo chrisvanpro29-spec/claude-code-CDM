@@ -111,7 +111,7 @@ titre. Objectif : **égaler le marché et être bien calibré**, pas parier. Le 
 | `engine/simulate.py` | Module 3 — Monte Carlo du tournoi (format réel 48 équipes) |
 | `validation/walk_forward.py` | Module 4 — replay chronologique, le juge |
 | `validation/metrics.py` | Brier, log-loss, reliability diagram |
-| `tests/` | anti-fuite (`test_no_lookahead`) + couplage (`test_coupling`) |
+| `tests/` | anti-fuite (`test_no_lookahead`), couplage (`test_coupling`), standardisation (`test_standardization`), centrage du tilt (`test_centering`), milieu (`test_midfield`) |
 
 ## Utilisation
 
@@ -128,8 +128,11 @@ Sorties dans `data/validation/` : `walk_forward_report.md`, `walk_forward.json`,
 
 - **Baseline équipe** : fit OK (convergence propre), Brier 1X2 out-of-sample
   ~0.58 sur les matchs CDM déjà joués — nettement mieux que l'uniforme (0.667).
-- **Couche joueur** : machinerie complète et testée, mais **inactive** faute de
-  données joueur (FBref/Understat indisponibles ici — cf. audit). Conformément au
-  principe « pas de note fabriquée », elle reste coupée et le rapport le dit.
+- **Couche joueur** : machinerie complète et testée (composantes standardisées en
+  z-score puis pondérées ; tilt centré sur la référence ligue ; différentiel de
+  milieu branché), mais **inactive** faute de données joueur (FBref/Understat
+  indisponibles ici — cf. audit). Conformément au principe « pas de note
+  fabriquée », elle reste coupée et le rapport le dit. Les 23 tests prouvent la
+  logique des trois molettes *avant* tout branchement de données.
 - **Vs marché** : nécessite des snapshots de cotes capturés *avant* chaque match
   (the-odds-api ne renvoie pas de cotes rétroactives).
