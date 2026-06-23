@@ -103,3 +103,27 @@ ELO_GOAL_DIFF_SCALING = True            # ajustement par écart de buts (style W
 # ---------------------------------------------------------------------------
 OVER_UNDER_LINES = (1.5, 2.5, 3.5)
 RELIABILITY_BINS = 10
+
+# ---------------------------------------------------------------------------
+# Collecteur de snapshots marché (the-odds-api, source G) — le juge qui s'accumule
+# ---------------------------------------------------------------------------
+ODDS_SPORT_KEY = "soccer_fifa_world_cup"
+ODDS_MARKETS = "h2h"            # juge principal (1X2). "totals" optionnel (double le coût quota).
+ODDS_REGIONS = "uk,eu"
+ODDS_FORMAT = "decimal"
+SNAPSHOT_HORIZON_HOURS = 72     # ne figer que les matchs à <= 72 h du coup d'envoi
+# Exchanges « sharp » à préférer (confirmés par le probe G : betfair_ex_*, matchbook).
+PREFERRED_SHARP_BOOKS = ["betfair_ex_uk", "betfair_ex_eu", "matchbook"]
+DATE_MATCH_TOLERANCE_DAYS = 1   # tolérance de jointure fixture (fuseaux : commence_time UTC)
+TEAM_NAME_MAP = {               # surcharges nom the-odds-api -> nom results.csv
+    "USA": "United States",
+    "Czechia": "Czech Republic",
+    "Korea Republic": "South Korea",
+    "Türkiye": "Turkey",
+    "Turkiye": "Turkey",
+    "Côte d'Ivoire": "Ivory Coast",
+    "Cote d'Ivoire": "Ivory Coast",
+    "Cabo Verde": "Cape Verde",
+    "Congo DR": "DR Congo",
+    "Bosnia & Herzegovina": "Bosnia and Herzegovina",
+}

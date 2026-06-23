@@ -109,6 +109,7 @@ titre. Objectif : **égaler le marché et être bien calibré**, pas parier. Le 
 | `engine/player_form.py` | Module 2 — fonction-porte `note_joueur` + agrégation (shrinkage, minutes) |
 | `engine/coupling.py` | Tilt borné des λ par les notes (interrupteur + poids) |
 | `engine/simulate.py` | Module 3 — Monte Carlo du tournoi (format réel 48 équipes) |
+| `engine/market_collector.py` | Collecteur de snapshots marché (the-odds-api) — le juge qui s'accumule |
 | `validation/walk_forward.py` | Module 4 — replay chronologique, le juge |
 | `validation/metrics.py` | Brier, log-loss, reliability diagram |
 | `tests/` | anti-fuite (`test_no_lookahead`), couplage (`test_coupling`), standardisation (`test_standardization`), centrage du tilt (`test_centering`), milieu (`test_midfield`) |
@@ -117,9 +118,17 @@ titre. Objectif : **égaler le marché et être bien calibré**, pas parier. Le 
 
 ```bash
 python recon.py                       # (prérequis) met results.csv en cache
-python -m validation.walk_forward     # le juge : Brier OFF vs ON + reliability + verdict
-python -m pytest tests/ -q            # garanties anti-fuite & bornes du couplage
+python -m engine.market_collector --dry-run   # liste les lignes marché à capturer (sans écrire)
+python -m engine.market_collector             # capture/maintient data/raw/market_snapshots/consensus.json
+python -m validation.walk_forward     # le juge : Brier OFF vs ON (+ vs marché) + reliability + verdict
+python -m pytest tests/ -q            # garanties anti-fuite, couplage, collecteur marché
 ```
+
+**Collecteur marché (chronosensible)** : capture, avant chaque match, la ligne 1X2
+consensus dé-viggée et la résout contre les fixtures (jointure exacte). À lancer
+régulièrement (cron, plusieurs fois les jours de match) — un match joué sans
+snapshot pré-coup d'envoi est perdu (le tier gratuit ne donne pas l'historique des
+cotes). Chaque match capturé devient un point de comparaison modèle-vs-marché.
 
 Sorties dans `data/validation/` : `walk_forward_report.md`, `walk_forward.json`,
 `reliability.png`.
