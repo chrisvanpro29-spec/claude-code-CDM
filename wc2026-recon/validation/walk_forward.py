@@ -107,6 +107,17 @@ def run() -> dict:
     # Échelle des composantes ajustée UNE fois sur la population pré-tournoi (sans fuite).
     normalizer = ComponentNormalizer.fit(store, config.NORMALIZER_FIT_CUTOFF)
 
+    # Qualité d'effectif (SoFIFA, centrée) — dégradation propre si indisponible.
+    quality: dict[str, float] = {}
+    try:
+        from engine import squad_quality
+        quality = squad_quality.centered_quality()
+        if quality:
+            print(f"[walk-forward] qualité d'effectif centrée pour {len(quality)} sélections.")
+    except Exception as e:  # noqa: BLE001
+        print(f"[walk-forward] qualité d'effectif indisponible ({type(e).__name__}) "
+              "-> tilt qualité neutralisé.")
+
     # Référence ligue (centre du tilt) recalculée par date_ref, mise en cache.
     ref_cache: dict[object, tuple] = {}
 
@@ -135,12 +146,14 @@ def run() -> dict:
         lam_h, lam_a = model.lambdas(home, away, neutral)
         p_off = model.match_probabilities(home, away, neutral, lambdas=(lam_h, lam_a))
 
-        # Couche ON : notes équipe à date_ref (fenêtre glissante via note_joueur).
+        # Couche ON : notes équipe à date_ref (fenêtre glissante via note_joueur)
+        # + qualité d'effectif centrée (SoFIFA). Chaque apport est séparable.
         nh = team_notes(squads.get(home, []), date_ref, store, normalizer) if squads else None
         na = team_notes(squads.get(away, []), date_ref, store, normalizer) if squads else None
         ref = reference_at(date_ref) if (nh is not None and na is not None) else None
-        lh2, la2, info = coupling.adjusted_lambdas(lam_h, lam_a, nh, na,
-                                                   ref=ref, layer_on=True)
+        qh, qa = quality.get(home), quality.get(away)
+        lh2, la2, info = coupling.adjusted_lambdas(lam_h, lam_a, nh, na, ref=ref,
+                                                   qual_home=qh, qual_away=qa, layer_on=True)
         if info["layer_applied"]:
             layer_applied += 1
         p_on = model.match_probabilities(home, away, neutral, lambdas=(lh2, la2))
