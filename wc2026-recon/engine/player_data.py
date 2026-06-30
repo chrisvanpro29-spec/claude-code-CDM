@@ -65,9 +65,16 @@ def flatten_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Aplatit un MultiIndex de colonnes FBref en noms simples (niveau le plus spécifique).
 
     ('Standard','Gls') -> 'Gls' ; ('Unnamed: 5_level_0','90s') -> '90s'.
+
+    FBref répète des noms entre groupes : un même 'Gls' apparaît en TOTAL
+    (groupe 'Performance') ET en taux ('Per 90 Minutes'). Aplatir crée alors des
+    libellés dupliqués -> une sélection `df['Gls']` renverrait une Series et tout
+    test booléen dessus lèverait « truth value of a Series is ambiguous ». On
+    déduplique en gardant la PREMIÈRE occurrence (le total, qui précède le /90
+    dans l'ordre des colonnes FBref) ; `player_form` fait ensuite le /90 lui-même.
     """
     if not isinstance(df.columns, pd.MultiIndex):
-        return df
+        return df.loc[:, ~df.columns.duplicated(keep="first")]
     flat = []
     for tup in df.columns:
         parts = [str(x) for x in tup if x is not None and str(x)
@@ -75,7 +82,7 @@ def flatten_columns(df: pd.DataFrame) -> pd.DataFrame:
         flat.append(parts[-1] if parts else str(tup[-1]))
     out = df.copy()
     out.columns = flat
-    return out
+    return out.loc[:, ~out.columns.duplicated(keep="first")]
 
 
 def per90(total, nineties) -> float:
@@ -102,6 +109,13 @@ def league_adjust(value: float, competition: str | None) -> float:
     return float(value) * league_strength.strength(competition)
 
 
+def _scalar(v):
+    """Renvoie une valeur scalaire même si `v` est une Series (libellé dupliqué résiduel)."""
+    if isinstance(v, pd.Series):
+        v = v.iloc[0] if len(v) else None
+    return v
+
+
 def to_store_rows(merged: pd.DataFrame, competition: str, is_national: bool,
                   date: dt.date, player_col: str = "player") -> list[dict]:
     """Transforme un tableau FBref (aplati, 1 ligne/joueur) en lignes PlayerMatchStore.
@@ -112,11 +126,11 @@ def to_store_rows(merged: pd.DataFrame, competition: str, is_national: bool,
     """
     rows = []
     for _, r in merged.iterrows():
-        nineties = pd.to_numeric(r.get(NINETIES_COL), errors="coerce")
-        if pd.isna(nineties) or nineties <= 0:
+        nineties = pd.to_numeric(_scalar(r.get(NINETIES_COL)), errors="coerce")
+        if pd.isna(nineties) or nineties <= 0:   # scalaire -> test booléen non ambigu
             continue
         row = {
-            "player": r.get(player_col),
+            "player": _scalar(r.get(player_col)),
             "date": date,
             "competition": competition,
             "is_national": is_national,
@@ -124,7 +138,7 @@ def to_store_rows(merged: pd.DataFrame, competition: str, is_national: bool,
         }
         for fbref_col, canon in FBREF_COMPONENT_MAP.items():
             if fbref_col in merged.columns:
-                v = pd.to_numeric(r.get(fbref_col), errors="coerce")
+                v = pd.to_numeric(_scalar(r.get(fbref_col)), errors="coerce")
                 row[canon] = float(v) if not pd.isna(v) else 0.0
         rows.append(row)
     return rows

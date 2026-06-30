@@ -7,6 +7,7 @@ fonctionne, qualité bornée, séparabilité forme/qualité).
 
 from __future__ import annotations
 
+import pandas as pd
 import pytest
 
 import config
@@ -15,6 +16,41 @@ from engine import coupling
 from engine.player_form import TeamNotes
 
 REF = (0.0, 0.0, 0.0)
+
+
+# --- Ciblage des sélections nationales (pas des clubs) ---------------------
+
+def test_targets_national_teams_not_clubs(monkeypatch):
+    """fetch_team_quality doit cibler la ligue des sélections, pas les clubs."""
+    captured = {}
+
+    def fake_ratings(leagues, versions="latest"):
+        captured["leagues"] = leagues
+        # DataFrame façon SoFIFA national-teams (index = sélections).
+        return pd.DataFrame({"overall": [85, 84, 83]},
+                            index=["France", "Germany", "Brazil"])
+
+    monkeypatch.setattr(sq, "_sofifa_team_ratings", fake_ratings)
+    out = sq.fetch_team_quality()
+
+    # cible la ligue des sélections nationales, jamais une ligue de clubs
+    assert sq.SOFIFA_NATIONAL_LEAGUE_KEY in captured["leagues"]
+    assert not (set(captured["leagues"]) & sq.KNOWN_CLUB_LEAGUE_KEYS)
+    # la sortie contient des sélections, pas des clubs
+    assert {"France", "Germany", "Brazil"} <= set(out)
+    assert not ({"Manchester City", "Real Madrid", "Bayern Munich"} & set(out))
+
+
+def test_parser_extracts_named_teams():
+    df = pd.DataFrame({"overall": [85, 83]}, index=["France", "Germany"])
+    assert sq._team_ratings_to_dict(df) == {"France": 85.0, "Germany": 83.0}
+
+
+def test_register_national_league_adds_key():
+    from soccerdata import _config as sdcfg
+    sq._register_national_league()
+    assert sq.SOFIFA_NATIONAL_LEAGUE_KEY in sdcfg.LEAGUE_DICT
+    assert sq.SOFIFA_NATIONAL_LEAGUE_KEY not in sq.KNOWN_CLUB_LEAGUE_KEYS
 
 
 # --- Centrage qualité -----------------------------------------------------

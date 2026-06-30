@@ -35,44 +35,47 @@ def center_quality(ratings: dict[str, float]) -> dict[str, float]:
     return {team: (v - mean) / std for team, v in ratings.items()}
 
 
-def fetch_team_quality(seasons=None) -> dict[str, float]:
-    """Lit les notes d'effectif SoFIFA par équipe (réseau). Dégradation propre.
+# ---------------------------------------------------------------------------
+# Cible : SÉLECTIONS NATIONALES (pas les clubs).
+# ---------------------------------------------------------------------------
+# Par défaut, SoFIFA ne connaît que les 5 grands championnats de CLUBS -> sans
+# ciblage, read_team_ratings renvoie Manchester City, Real Madrid… Les sélections
+# nationales sont une « ligue » à part sur SoFIFA (id 78, « Friendly International »,
+# nationName « International »). On l'enregistre dans le league_dict de soccerdata
+# et on la cible explicitement. (Si SoFIFA renommait cette ligue, ajuster la valeur.)
+SOFIFA_NATIONAL_LEAGUE_KEY = "INT-National Teams"
+SOFIFA_NATIONAL_LEAGUE_VALUE = "[International] Friendly International"
 
-    Retourne {equipe: note_overall}. Toute erreur réseau est laissée remonter à
-    l'appelant (qui logge et désactive le tilt qualité). Aucune note fabriquée.
+# Indices de clubs connus -> sert au test de non-régression « pas des clubs ».
+KNOWN_CLUB_LEAGUE_KEYS = {"ENG-Premier League", "ESP-La Liga", "ITA-Serie A",
+                          "GER-Bundesliga", "FRA-Ligue 1"}
+
+
+def _register_national_league() -> None:
+    """Enregistre la ligue des sélections nationales dans le league_dict de soccerdata.
+
+    Mutation en place du dict partagé -> visible par SoFIFA (qui exige que la clé
+    de ligue existe dans LEAGUE_DICT avant de la sélectionner).
     """
-    import soccerdata as sd
+    from soccerdata import _config as sdcfg
+    sdcfg.LEAGUE_DICT.setdefault(
+        SOFIFA_NATIONAL_LEAGUE_KEY, {"SoFIFA": SOFIFA_NATIONAL_LEAGUE_VALUE})
 
-    # SoFIFA est scrapé et fragile (cf. audit) : on tente plusieurs signatures de
-    # constructeur selon la version de soccerdata, et on laisse remonter l'erreur
-    # si le site a changé (l'appelant désactivera proprement le tilt qualité).
-    sofifa = None
-    attempts = ([{"seasons": seasons}] if seasons is not None
-                else [{"versions": "latest"}, {}])
-    last_err: Exception | None = None
-    for kwargs in attempts:
-        try:
-            sofifa = sd.SoFIFA(**kwargs)
-            break
-        except Exception as e:  # noqa: BLE001
-            last_err = e
-    if sofifa is None:
-        raise RuntimeError(f"SoFIFA indisponible (scraping cassé en amont ?) : {last_err}")
-    df = sofifa.read_team_ratings()
 
-    # Colonne de note globale : 'overall' si présente, sinon 1re colonne numérique.
-    col = None
-    for cand in ("overall", "Overall", "OVR", "ovr"):
-        if cand in df.columns:
-            col = cand
-            break
+def _team_ratings_to_dict(df, ratings_col: str | None = None) -> dict[str, float]:
+    """Parser pur (sans réseau) : DataFrame SoFIFA -> {nom_équipe: note_overall}."""
+    col = ratings_col
+    if col is None:
+        for cand in ("overall", "Overall", "OVR", "ovr"):
+            if cand in df.columns:
+                col = cand
+                break
     if col is None:
         numeric = df.select_dtypes("number")
         if numeric.empty:
             return {}
         col = numeric.columns[0]
 
-    # Index : nom d'équipe (peut être MultiIndex league/team).
     names = (df.index.get_level_values(-1) if hasattr(df.index, "get_level_values")
              else df.index)
     out: dict[str, float] = {}
@@ -84,6 +87,37 @@ def fetch_team_quality(seasons=None) -> dict[str, float]:
     return out
 
 
-def centered_quality(seasons=None) -> dict[str, float]:
-    """Notes d'effectif SoFIFA centrées/standardisées, prêtes pour le couplage."""
-    return center_quality(fetch_team_quality(seasons=seasons))
+def _sofifa_team_ratings(leagues, versions="latest"):
+    """Construit SoFIFA ciblé sur `leagues` et renvoie read_team_ratings().
+
+    Isolé (réseau/Chrome) et **patchable** par les tests. SoFIFA étant scrapé et
+    fragile (cf. audit), on tente quelques signatures de constructeur.
+    """
+    import soccerdata as sd
+
+    _register_national_league()
+    last_err: Exception | None = None
+    for kwargs in ({"leagues": leagues, "versions": versions},
+                   {"leagues": leagues}):
+        try:
+            return sd.SoFIFA(**kwargs).read_team_ratings()
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+    raise RuntimeError(f"SoFIFA indisponible (scraping cassé en amont ?) : {last_err}")
+
+
+def fetch_team_quality(leagues=None, versions="latest") -> dict[str, float]:
+    """Notes d'effectif des SÉLECTIONS NATIONALES SoFIFA. Dégradation propre.
+
+    Retourne {sélection: note_overall} (France, Germany, …). Cible la ligue des
+    sélections nationales par défaut ; toute erreur réseau remonte à l'appelant
+    (qui désactive le tilt qualité). Aucune note fabriquée.
+    """
+    leagues = leagues if leagues is not None else [SOFIFA_NATIONAL_LEAGUE_KEY]
+    df = _sofifa_team_ratings(leagues, versions=versions)
+    return _team_ratings_to_dict(df)
+
+
+def centered_quality(leagues=None, versions="latest") -> dict[str, float]:
+    """Notes d'effectif des sélections nationales, centrées/standardisées."""
+    return center_quality(fetch_team_quality(leagues=leagues, versions=versions))

@@ -66,6 +66,39 @@ def test_to_store_rows_schema_and_minutes():
     assert "xg_against" not in r                    # jamais fabriqué
 
 
+def test_real_fbref_duplicate_names_no_ambiguous_series():
+    """Régression : FBref répète 'Gls'/'xG' (total ET /90) -> libellés dupliqués.
+
+    Avant le fix, `components_per90_adjusted` levait
+    « ValueError: The truth value of a Series is ambiguous » sur ces colonnes.
+    """
+    cols = pd.MultiIndex.from_tuples([
+        ("Unnamed: 0_level_0", "player"),
+        ("Performance", "Gls"), ("Per 90 Minutes", "Gls"),     # doublon -> garder le total
+        ("Expected", "xG"), ("Per 90 Minutes", "xG"),          # doublon -> garder le total
+        ("Playing Time", "90s"),
+        ("Tackles", "Tkl"), ("Int", "Int"), ("Pass Types", "KP"),
+    ])
+    raw = pd.DataFrame([
+        ["Dembélé", 18, 1.8, 15.0, 1.5, 10.0, 9, 12, 30],
+        ["Reserve", 0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0],           # 0 min -> ignoré
+    ], columns=cols)
+
+    flat = pdata.flatten_columns(raw)
+    assert list(flat.columns).count("Gls") == 1                # dédupliqué
+    assert list(flat.columns).count("xG") == 1
+
+    rows = pdata.to_store_rows(flat, "Ligue 1", False, dt.date(2026, 6, 1))
+    assert len(rows) == 1
+    assert rows[0]["goals"] == 18 and rows[0]["xg"] == 15.0    # le TOTAL, pas le /90
+    assert rows[0]["minutes"] == pytest.approx(900.0)
+
+    # le chemin qui levait l'exception doit désormais passer
+    view = pdata.components_per90_adjusted(rows)
+    coef = league_strength.strength("Ligue 1")
+    assert view[0]["goals"] == pytest.approx(1.8 * coef)       # 18/10 = 1.8, ajusté ligue
+
+
 def test_store_rows_consumable_by_player_form():
     """Les lignes produites passent telles quelles dans note_joueur (pas de réécriture)."""
     from engine.player_form import PlayerMatchStore, ComponentNormalizer, note_joueur
