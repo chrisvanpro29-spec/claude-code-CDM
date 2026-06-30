@@ -18,39 +18,64 @@ from engine.player_form import TeamNotes
 REF = (0.0, 0.0, 0.0)
 
 
-# --- Ciblage des sélections nationales (pas des clubs) ---------------------
+# --- Reconstruction par joueur (note d'effectif reconstruite, pas lue) ------
 
-def test_targets_national_teams_not_clubs(monkeypatch):
-    """fetch_team_quality doit cibler la ligue des sélections, pas les clubs."""
-    captured = {}
-
-    def fake_ratings(leagues, versions="latest"):
-        captured["leagues"] = leagues
-        # DataFrame façon SoFIFA national-teams (index = sélections).
-        return pd.DataFrame({"overall": [85, 84, 83]},
-                            index=["France", "Germany", "Brazil"])
-
-    monkeypatch.setattr(sq, "_sofifa_team_ratings", fake_ratings)
-    out = sq.fetch_team_quality()
-
-    # cible la ligue des sélections nationales, jamais une ligue de clubs
-    assert sq.SOFIFA_NATIONAL_LEAGUE_KEY in captured["leagues"]
-    assert not (set(captured["leagues"]) & sq.KNOWN_CLUB_LEAGUE_KEYS)
-    # la sortie contient des sélections, pas des clubs
-    assert {"France", "Germany", "Brazil"} <= set(out)
-    assert not ({"Manchester City", "Real Madrid", "Bayern Munich"} & set(out))
+from engine.player_form import SquadPlayer
 
 
-def test_parser_extracts_named_teams():
-    df = pd.DataFrame({"overall": [85, 83]}, index=["France", "Germany"])
-    assert sq._team_ratings_to_dict(df) == {"France": 85.0, "Germany": 83.0}
+def _squad(*names_minutes):
+    return [SquadPlayer(player=n, position="MID", expected_minutes=m)
+            for n, m in names_minutes]
 
 
-def test_register_national_league_adds_key():
-    from soccerdata import _config as sdcfg
-    sq._register_national_league()
-    assert sq.SOFIFA_NATIONAL_LEAGUE_KEY in sdcfg.LEAGUE_DICT
-    assert sq.SOFIFA_NATIONAL_LEAGUE_KEY not in sq.KNOWN_CLUB_LEAGUE_KEYS
+def test_player_ratings_parser():
+    df = pd.DataFrame({"overall": [88, 84]}, index=["Mbappé", "Griezmann"])
+    assert sq.player_ratings_to_dict(df) == {"Mbappé": 88.0, "Griezmann": 84.0}
+
+
+def test_aggregate_minutes_weighted():
+    squads = {"France": _squad(("Mbappé", 90), ("Sub", 0))}
+    ratings = {"Mbappé": 90.0, "Sub": 70.0}
+    out, _ = sq.aggregate_squad_quality(squads, ratings, min_players=1)
+    # titulaire (90 min) domine le remplaçant (0 min) -> proche de 90, pas 80
+    assert out["France"] == pytest.approx(90.0)
+
+
+def test_aggregate_skips_undercovered_nation():
+    squads = {"Tuvalu": _squad(("X", 90))}                 # 1 seul joueur connu
+    ratings = {"X": 70.0}
+    out, _ = sq.aggregate_squad_quality(squads, ratings, min_players=6)
+    assert "Tuvalu" not in out                              # couverture insuffisante -> omise
+
+
+def test_aggregate_logs_unmatched():
+    squads = {"France": _squad(("Mbappé", 90), ("Inconnu", 90))}
+    ratings = {"Mbappé": 90.0}
+    out, unmatched = sq.aggregate_squad_quality(squads, ratings, min_players=1)
+    assert any("Inconnu" in u for u in unmatched)           # non-apparié loggé, jamais deviné
+
+
+def test_reconstruct_then_center_uses_players_not_team(monkeypatch):
+    """Bout en bout (sans réseau) : note d'effectif reconstruite depuis les joueurs."""
+    squads = {
+        "France":  _squad(*[(f"FR{i}", 90) for i in range(8)]),
+        "Germany": _squad(*[(f"DE{i}", 90) for i in range(8)]),
+    }
+    ratings = {**{f"FR{i}": 88.0 for i in range(8)},        # France plus forte
+               **{f"DE{i}": 80.0 for i in range(8)}}
+
+    def fake_player_ratings(leagues=None, versions="latest"):
+        return ratings
+    monkeypatch.setattr(sq, "fetch_player_ratings", fake_player_ratings)
+
+    centered = sq.centered_quality(squads)
+    assert set(centered) == {"France", "Germany"}           # des sélections, pas des clubs
+    assert centered["France"] > 0 > centered["Germany"]     # France au-dessus de la moyenne
+    assert centered["France"] == pytest.approx(-centered["Germany"])  # symétrie (2 équipes)
+
+
+def test_centered_quality_empty_without_squads():
+    assert sq.centered_quality({}) == {}                    # pas d'effectif -> pas de note fabriquée
 
 
 # --- Centrage qualité -----------------------------------------------------

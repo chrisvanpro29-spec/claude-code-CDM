@@ -108,7 +108,7 @@ titre. Objectif : **égaler le marché et être bien calibré**, pas parier. Le 
 | `engine/league_strength.py` | Coefficients de force des ligues (§3.3) |
 | `engine/player_form.py` | Module 2 — fonction-porte `note_joueur` + agrégation (shrinkage, minutes) |
 | `engine/player_data.py` | Alimentation FBref des composantes par 90 (aplatissement, /90, ajustement ligue) |
-| `engine/squad_quality.py` | Qualité d'effectif SoFIFA, centrée/standardisée (4e tilt) |
+| `engine/squad_quality.py` | Qualité d'effectif reconstruite des notes joueur SoFIFA, agrégée par sélection puis centrée (4e tilt) |
 | `engine/coupling.py` | Tilt borné des λ : forme + milieu + qualité, séparables (interrupteur + poids) |
 | `engine/simulate.py` | Module 3 — Monte Carlo du tournoi (format réel 48 équipes) |
 | `engine/market_collector.py` | Collecteur de snapshots marché (the-odds-api) — le juge qui s'accumule |

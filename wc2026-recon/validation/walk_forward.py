@@ -107,13 +107,15 @@ def run() -> dict:
     # Échelle des composantes ajustée UNE fois sur la population pré-tournoi (sans fuite).
     normalizer = ComponentNormalizer.fit(store, config.NORMALIZER_FIT_CUTOFF)
 
-    # Qualité d'effectif (SoFIFA, centrée) — dégradation propre si indisponible.
+    # Qualité d'effectif (reconstruite par joueur via SoFIFA, centrée) — dégradation
+    # propre si indisponible (besoin des effectifs ; sans eux, pas de reconstruction).
     quality: dict[str, float] = {}
     try:
         from engine import squad_quality
-        quality = squad_quality.centered_quality()
+        quality = squad_quality.centered_quality(squads)
         if quality:
-            print(f"[walk-forward] qualité d'effectif centrée pour {len(quality)} sélections.")
+            print(f"[walk-forward] qualité d'effectif reconstruite/centrée pour "
+                  f"{len(quality)} sélections.")
     except Exception as e:  # noqa: BLE001
         print(f"[walk-forward] qualité d'effectif indisponible ({type(e).__name__}) "
               "-> tilt qualité neutralisé.")

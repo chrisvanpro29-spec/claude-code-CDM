@@ -1,10 +1,21 @@
 """Qualité d'effectif (SoFIFA) — 4e tilt centré (brief §2).
 
-`SoFIFA.read_team_ratings` donne une note d'effectif par sélection. On la **centre**
-(et standardise) sur la population des sélections : c'est l'écart à la normale qui
-compte, jamais l'absolu — la qualité de fond est déjà dans α/β du modèle de base
-(anti-double-comptage). Sortie : un scalaire centré/borné par sélection, branché
-comme tilt via `coupling.adjusted_lambdas(qual_home=…, qual_away=…)`.
+Note d'effectif **reconstruite à partir des joueurs**, PAS lue directement :
+`SoFIFA.read_team_ratings`/`read_leagues` n'expose pas les sélections nationales
+(soccerdata ne connaît que les championnats de clubs). On passe donc par les notes
+FIFA individuelles (`SoFIFA.read_player_ratings`) puis on **agrège par sélection**
+— moyenne des notes des joueurs de l'effectif, pondérée par les minutes attendues
+(les titulaires pèsent plus). Cela colle d'ailleurs à l'esprit du projet : on
+reconstruit la note à partir des composantes, jamais une note d'équipe opaque.
+
+On **centre** ensuite (z-score sur la population des sélections) : c'est l'écart à
+la normale qui compte, jamais l'absolu — la qualité de fond est déjà dans α/β du
+modèle de base (anti-double-comptage). Sortie : un scalaire centré/borné par
+sélection, branché comme tilt via `coupling.adjusted_lambdas(qual_home=…, …)`.
+
+Limite assumée : SoFIFA `read_player_ratings` ne porte que les joueurs des grands
+championnats -> riche pour les favoris, pauvre pour les petites nations (repli
+couche équipe). Mapping par nom = fragile, non-appariés loggés, jamais devinés.
 
 Alternative documentée (non implémentée v1) : valeur marché Transfermarkt via
 scraper dédié (fragile + ToS), même traitement centré, si explicitement souhaitée.
@@ -13,6 +24,12 @@ scraper dédié (fragile + ToS), même traitement centré, si explicitement souh
 from __future__ import annotations
 
 import statistics
+
+# Nb minimal de joueurs d'un effectif retrouvés dans SoFIFA pour oser une note.
+MIN_PLAYERS_FOR_QUALITY = 6
+
+# Libellés possibles de la colonne de note globale renvoyée par read_player_ratings.
+_RATING_COL_CANDIDATES = ("overall", "overall_rating", "Overall rating", "OVR", "ovr")
 
 
 def center_quality(ratings: dict[str, float]) -> dict[str, float]:
@@ -36,37 +53,17 @@ def center_quality(ratings: dict[str, float]) -> dict[str, float]:
 
 
 # ---------------------------------------------------------------------------
-# Cible : SÉLECTIONS NATIONALES (pas les clubs).
+# Reconstruction par joueur (cœur testable, sans réseau)
 # ---------------------------------------------------------------------------
-# Par défaut, SoFIFA ne connaît que les 5 grands championnats de CLUBS -> sans
-# ciblage, read_team_ratings renvoie Manchester City, Real Madrid… Les sélections
-# nationales sont une « ligue » à part sur SoFIFA (id 78, « Friendly International »,
-# nationName « International »). On l'enregistre dans le league_dict de soccerdata
-# et on la cible explicitement. (Si SoFIFA renommait cette ligue, ajuster la valeur.)
-SOFIFA_NATIONAL_LEAGUE_KEY = "INT-National Teams"
-SOFIFA_NATIONAL_LEAGUE_VALUE = "[International] Friendly International"
 
-# Indices de clubs connus -> sert au test de non-régression « pas des clubs ».
-KNOWN_CLUB_LEAGUE_KEYS = {"ENG-Premier League", "ESP-La Liga", "ITA-Serie A",
-                          "GER-Bundesliga", "FRA-Ligue 1"}
+def player_ratings_to_dict(df, rating_col: str | None = None) -> dict[str, float]:
+    """Parser pur : DataFrame `read_player_ratings` -> {nom_joueur: note_overall}.
 
-
-def _register_national_league() -> None:
-    """Enregistre la ligue des sélections nationales dans le league_dict de soccerdata.
-
-    Mutation en place du dict partagé -> visible par SoFIFA (qui exige que la clé
-    de ligue existe dans LEAGUE_DICT avant de la sélectionner).
+    `df` est indexé (ou colonne) par nom de joueur, avec une colonne de note globale.
     """
-    from soccerdata import _config as sdcfg
-    sdcfg.LEAGUE_DICT.setdefault(
-        SOFIFA_NATIONAL_LEAGUE_KEY, {"SoFIFA": SOFIFA_NATIONAL_LEAGUE_VALUE})
-
-
-def _team_ratings_to_dict(df, ratings_col: str | None = None) -> dict[str, float]:
-    """Parser pur (sans réseau) : DataFrame SoFIFA -> {nom_équipe: note_overall}."""
-    col = ratings_col
+    col = rating_col
     if col is None:
-        for cand in ("overall", "Overall", "OVR", "ovr"):
+        for cand in _RATING_COL_CANDIDATES:
             if cand in df.columns:
                 col = cand
                 break
@@ -87,37 +84,76 @@ def _team_ratings_to_dict(df, ratings_col: str | None = None) -> dict[str, float
     return out
 
 
-def _sofifa_team_ratings(leagues, versions="latest"):
-    """Construit SoFIFA ciblé sur `leagues` et renvoie read_team_ratings().
+def aggregate_squad_quality(squads: dict, player_ratings: dict[str, float],
+                            min_players: int = MIN_PLAYERS_FOR_QUALITY
+                            ) -> tuple[dict[str, float], list[str]]:
+    """Agrège les notes joueur par sélection (moyenne pondérée par les minutes).
 
-    Isolé (réseau/Chrome) et **patchable** par les tests. SoFIFA étant scrapé et
-    fragile (cf. audit), on tente quelques signatures de constructeur.
+    `squads` : {sélection: [SquadPlayer(player, position, expected_minutes)]}.
+    Retourne ({sélection: note}, non_appariés) ; une sélection dont trop peu de
+    joueurs sont retrouvés dans SoFIFA est OMISE (couverture insuffisante -> la
+    couche retombera sur la force équipe seule). Aucune note fabriquée.
+    """
+    out: dict[str, float] = {}
+    unmatched: list[str] = []
+    for nation, squad in squads.items():
+        pairs = []  # (note, poids)
+        for sp in squad:
+            rating = player_ratings.get(getattr(sp, "player", None))
+            if rating is None:
+                unmatched.append(f"{nation}:{getattr(sp, 'player', '?')}")
+                continue
+            w = max(float(getattr(sp, "expected_minutes", 0.0) or 0.0), 0.0)
+            pairs.append((rating, w))
+        if len(pairs) < min_players:
+            continue
+        total_w = sum(w for _, w in pairs)
+        if total_w > 0:
+            out[nation] = sum(r * w for r, w in pairs) / total_w
+        else:  # aucune minute renseignée -> moyenne simple
+            out[nation] = sum(r for r, _ in pairs) / len(pairs)
+    return out, unmatched
+
+
+# ---------------------------------------------------------------------------
+# Fetch live (réseau/Chrome) — isolé, patchable, dégradation propre.
+# ---------------------------------------------------------------------------
+
+def fetch_player_ratings(leagues=None, versions="latest") -> dict[str, float]:
+    """Notes FIFA individuelles via SoFIFA (joueurs des grands championnats).
+
+    Isolé et **patchable** par les tests. SoFIFA étant scrapé/fragile (cf. audit),
+    toute erreur remonte à l'appelant (qui désactive le tilt qualité).
     """
     import soccerdata as sd
 
-    _register_national_league()
+    attempts = ([{"leagues": leagues, "versions": versions}] if leagues is not None
+                else [{"versions": versions}, {}])
     last_err: Exception | None = None
-    for kwargs in ({"leagues": leagues, "versions": versions},
-                   {"leagues": leagues}):
+    for kwargs in attempts:
         try:
-            return sd.SoFIFA(**kwargs).read_team_ratings()
+            df = sd.SoFIFA(**kwargs).read_player_ratings()
+            return player_ratings_to_dict(df)
         except Exception as e:  # noqa: BLE001
             last_err = e
     raise RuntimeError(f"SoFIFA indisponible (scraping cassé en amont ?) : {last_err}")
 
 
-def fetch_team_quality(leagues=None, versions="latest") -> dict[str, float]:
-    """Notes d'effectif des SÉLECTIONS NATIONALES SoFIFA. Dégradation propre.
+def reconstruct_team_quality(squads: dict, leagues=None, versions="latest"
+                             ) -> dict[str, float]:
+    """Note de qualité par sélection, reconstruite depuis les notes joueur SoFIFA."""
+    ratings = fetch_player_ratings(leagues=leagues, versions=versions)
+    quality, _unmatched = aggregate_squad_quality(squads, ratings)
+    return quality
 
-    Retourne {sélection: note_overall} (France, Germany, …). Cible la ligue des
-    sélections nationales par défaut ; toute erreur réseau remonte à l'appelant
-    (qui désactive le tilt qualité). Aucune note fabriquée.
+
+def centered_quality(squads: dict, leagues=None, versions="latest") -> dict[str, float]:
+    """Qualité d'effectif reconstruite PUIS centrée/standardisée, prête pour le couplage.
+
+    `squads` est requis : sans effectifs, on ne peut pas reconstruire (et on ne
+    fabrique pas) -> renvoie {} (tilt qualité neutralisé).
     """
-    leagues = leagues if leagues is not None else [SOFIFA_NATIONAL_LEAGUE_KEY]
-    df = _sofifa_team_ratings(leagues, versions=versions)
-    return _team_ratings_to_dict(df)
-
-
-def centered_quality(leagues=None, versions="latest") -> dict[str, float]:
-    """Notes d'effectif des sélections nationales, centrées/standardisées."""
-    return center_quality(fetch_team_quality(leagues=leagues, versions=versions))
+    if not squads:
+        return {}
+    return center_quality(reconstruct_team_quality(squads, leagues=leagues,
+                                                   versions=versions))
