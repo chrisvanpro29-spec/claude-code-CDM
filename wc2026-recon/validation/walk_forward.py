@@ -54,12 +54,10 @@ def load_player_store() -> PlayerMatchStore:
 
 
 def load_squads() -> dict[str, list[SquadPlayer]]:
-    """Charge les onze probables {équipe: [SquadPlayer]} si disponibles ; sinon {}."""
-    f = DATA_DIR / "raw" / "squads.json"
-    if not f.exists():
-        return {}
-    raw = json.loads(f.read_text(encoding="utf-8"))
-    return {team: [SquadPlayer(**p) for p in players] for team, players in raw.items()}
+    """Charge les effectifs {équipe: [SquadPlayer]} depuis data/squads.json
+    (ingestion Wikipédia, cf. engine/squads.py) ; {} si pas encore ingéré."""
+    from engine import squads as squads_mod
+    return squads_mod.load_squad_players()
 
 
 def load_market_snapshots() -> dict[tuple, np.ndarray]:

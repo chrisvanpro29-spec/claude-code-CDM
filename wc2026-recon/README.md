@@ -109,22 +109,33 @@ titre. Objectif : **égaler le marché et être bien calibré**, pas parier. Le 
 | `engine/player_form.py` | Module 2 — fonction-porte `note_joueur` + agrégation (shrinkage, minutes) |
 | `engine/player_data.py` | Alimentation FBref des composantes par 90 (aplatissement, /90, ajustement ligue) |
 | `engine/squad_quality.py` | Qualité d'effectif reconstruite des notes joueur SoFIFA, agrégée par sélection puis centrée (4e tilt) |
+| `engine/squads.py` | Ingestion des effectifs CDM 2026 (Wikipédia) : parsing, alignement noms de nations, recalage noms joueur |
 | `engine/coupling.py` | Tilt borné des λ : forme + milieu + qualité, séparables (interrupteur + poids) |
 | `engine/simulate.py` | Module 3 — Monte Carlo du tournoi (format réel 48 équipes) |
 | `engine/market_collector.py` | Collecteur de snapshots marché (the-odds-api) — le juge qui s'accumule |
 | `validation/walk_forward.py` | Module 4 — replay chronologique, le juge |
 | `validation/metrics.py` | Brier, log-loss, reliability diagram |
-| `tests/` | anti-fuite (`test_no_lookahead`), couplage (`test_coupling`), standardisation (`test_standardization`), centrage (`test_centering`), milieu (`test_midfield`), collecteur marché (`test_market_collector`), extraction FBref (`test_player_data`), qualité d'effectif (`test_squad_quality`) |
+| `tests/` | anti-fuite (`test_no_lookahead`), couplage (`test_coupling`), standardisation (`test_standardization`), centrage (`test_centering`), milieu (`test_midfield`), collecteur marché (`test_market_collector`), extraction FBref (`test_player_data`), qualité d'effectif (`test_squad_quality`), ingestion effectifs (`test_squads`) |
 
 ## Utilisation
 
 ```bash
 python recon.py                       # (prérequis) met results.csv en cache
+python ingest_squads.py               # ingestion ponctuelle des effectifs (Wikipédia) -> data/squads.json
+python ingest_squads.py --refresh     # re-tire (ex. remplacement blessure)
 python -m engine.market_collector --dry-run   # liste les lignes marché à capturer (sans écrire)
 python -m engine.market_collector             # capture/maintient data/raw/market_snapshots/consensus.json
 python -m validation.walk_forward     # le juge : Brier OFF vs ON (+ vs marché) + reliability + verdict
-python -m pytest tests/ -q            # garanties anti-fuite, couplage, collecteur marché
+python -m pytest tests/ -q            # garanties anti-fuite, couplage, collecteur marché, ingestion effectifs
 ```
+
+**Ingestion des effectifs** : ponctuelle, pas un flux récurrent — les effectifs
+CDM 2026 sont figés (annoncés le 2 juin). `data/squads.json` (`{nation: [nom, ...]}`,
+noms alignés sur `results.csv`) alimente à la fois `squad_quality.centered_quality`
+et l'agrégation de forme par sélection (`player_form.team_notes`, via
+`validation.walk_forward.load_squads`). Le recalage des noms joueur entre
+Wikipédia, SoFIFA et FBref (normalisation + correspondance exacte puis approchée)
+ne devine jamais : les non-appariés sont loggés.
 
 **Collecteur marché (chronosensible)** : capture, avant chaque match, la ligne 1X2
 consensus dé-viggée et la résout contre les fixtures (jointure exacte). À lancer

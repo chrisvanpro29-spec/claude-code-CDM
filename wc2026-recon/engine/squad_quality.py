@@ -90,19 +90,29 @@ def aggregate_squad_quality(squads: dict, player_ratings: dict[str, float],
     """Agrège les notes joueur par sélection (moyenne pondérée par les minutes).
 
     `squads` : {sélection: [SquadPlayer(player, position, expected_minutes)]}.
-    Retourne ({sélection: note}, non_appariés) ; une sélection dont trop peu de
-    joueurs sont retrouvés dans SoFIFA est OMISE (couverture insuffisante -> la
-    couche retombera sur la force équipe seule). Aucune note fabriquée.
+    Les noms (Wikipédia) sont recalés sur ceux de `player_ratings` (SoFIFA) via
+    `squads.reconcile_names` : correspondance exacte après normalisation, puis
+    approchée à seuil élevé — jamais devinée. Retourne ({sélection: note},
+    non_appariés) ; une sélection dont trop peu de joueurs sont retrouvés est
+    OMISE (couverture insuffisante -> la couche retombera sur la force équipe
+    seule). Aucune note fabriquée.
     """
+    from .squads import reconcile_names  # import tardif : évite un cycle au chargement
+
     out: dict[str, float] = {}
     unmatched: list[str] = []
     for nation, squad in squads.items():
+        names = [getattr(sp, "player", None) for sp in squad]
+        matched, not_found = reconcile_names([n for n in names if n], player_ratings)
+        unmatched.extend(f"{nation}:{n}" for n in not_found)
+
         pairs = []  # (note, poids)
         for sp in squad:
-            rating = player_ratings.get(getattr(sp, "player", None))
-            if rating is None:
-                unmatched.append(f"{nation}:{getattr(sp, 'player', '?')}")
-                continue
+            player = getattr(sp, "player", None)
+            rating_name = matched.get(player)
+            if rating_name is None:
+                continue  # déjà comptabilisé dans `unmatched` ci-dessus
+            rating = player_ratings[rating_name]
             w = max(float(getattr(sp, "expected_minutes", 0.0) or 0.0), 0.0)
             pairs.append((rating, w))
         if len(pairs) < min_players:
