@@ -78,6 +78,124 @@ def test_centered_quality_empty_without_squads():
     assert sq.centered_quality({}) == {}                    # pas d'effectif -> pas de note fabriquée
 
 
+# --- Résilience au schéma SoFIFA (colonne 'version_id' absente/renommée) ---
+#
+# Régression : SoFIFA.__init__ (soccerdata) appelle inconditionnellement
+# read_versions(), qui suppose en dur .set_index("version_id"). Si la page
+# d'accueil SoFIFA ne renvoie plus cette structure (site changé, bloqué, page
+# d'erreur), soccerdata lève un KeyError pandas peu lisible
+# ("None of ['version_id'] are in the columns"). On vérifie que notre couche
+# (1) retrouve la colonne d'identifiant sans supposer un nom fixe, et
+# (2) ne plante jamais : elle échoue avec un message diagnostique clair.
+
+def test_select_id_column_finds_alternate_name():
+    """La colonne n'est PAS 'version_id' mais un candidat connu -> retrouvée."""
+    df = pd.DataFrame({"id": [251, 250], "fifa_edition": ["27", "26"]})
+    assert sq._select_id_column(df) == "id"
+
+
+def test_select_id_column_prefers_first_candidate_present():
+    df = pd.DataFrame({"version_id": [251], "id": [999]})
+    assert sq._select_id_column(df) == "version_id"
+
+
+def test_select_id_column_none_when_no_candidate_present():
+    """Colonne optionnelle absente -> None, jamais d'exception (pas de crash)."""
+    df = pd.DataFrame({"fifa_edition": ["27"], "update": ["Jan 1"]})
+    assert sq._select_id_column(df) is None
+
+
+def test_read_versions_robust_succeeds_on_valid_page(monkeypatch):
+    """Chemin heureux : page exploitable -> DataFrame indexé, aucune exception.
+
+    (La flexibilité sur le NOM de la colonne d'identifiant est testée
+    précisément par `test_select_id_column_*` ci-dessus, au niveau de la
+    fonction pure ; ici on vérifie l'intégration bout en bout du scraping.)
+    """
+    import soccerdata.sofifa as sofifa_mod
+
+    class FakeOpt:
+        def __init__(self, text, value):
+            self.text = text
+            self._value = value
+
+        def get(self, attr):
+            return self._value if attr == "value" else None
+
+    class FakePage:
+        def __init__(self, opts):
+            self._opts = opts
+
+        def xpath(self, expr):
+            if "select[1]" in expr:
+                return self._opts.get("editions", [])
+            if "select[2]" in expr:
+                return self._opts.get("updates", [])
+            return []
+
+    edition_opt = FakeOpt("27", "/path?ed=27")
+    update_opt = FakeOpt("Jan 2026", "/path?r=999")
+    pages = {
+        sofifa_mod.SO_FIFA_API: FakePage({"editions": [edition_opt]}),
+    }
+
+    def fake_html_parse(reader):
+        return pages.get(reader, FakePage({"updates": [update_opt]}))
+
+    class FakeReader:
+        data_dir = __import__("pathlib").Path("/tmp")
+
+        def get(self, url, filepath, max_age=None):
+            return url  # sert de clé pour fake_html_parse
+
+    monkeypatch.setattr(sofifa_mod.html, "parse", fake_html_parse)
+    df = sq._read_versions_robust(FakeReader())
+    assert df.index.name in sq._VERSION_ID_COL_CANDIDATES
+    assert 999 in df.index
+
+
+def test_read_versions_robust_raises_clear_error_when_unusable(monkeypatch):
+    """Page bloquée/vide (comme un interstitiel de certificat) -> message clair,
+    jamais l'exception pandas interne brute."""
+    import soccerdata.sofifa as sofifa_mod
+
+    class EmptyPage:
+        def xpath(self, expr):
+            return []   # aucun <select> -> aucune ligne extraite
+
+    class FakeReader:
+        data_dir = __import__("pathlib").Path("/tmp")
+
+        def get(self, url, filepath, max_age=None):
+            return None
+
+    monkeypatch.setattr(sofifa_mod.html, "parse", lambda reader: EmptyPage())
+
+    with pytest.raises(RuntimeError, match="liste des versions FIFA introuvable"):
+        sq._read_versions_robust(FakeReader())
+
+
+def test_fetch_player_ratings_degrades_cleanly_not_raw_pandas_error(monkeypatch):
+    """Bout en bout : la panne de version-resolution SoFIFA ne fait jamais
+    fuiter l'exception pandas interne ; le message reste diagnostique, et
+    read_versions est restauré après l'appel (pas d'effet de bord durable)."""
+    import soccerdata as sd
+
+    original = sd.SoFIFA.read_versions
+
+    def always_broken(self, max_age=1):
+        raise RuntimeError("SoFIFA : liste des versions FIFA introuvable (colonnes obtenues=[])")
+
+    # Simule le monkeypatch interne échouant systématiquement (page inexploitable).
+    monkeypatch.setattr(sq, "_read_versions_robust", always_broken)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        sq.fetch_player_ratings()
+    assert "None of" not in str(exc_info.value)          # pas de fuite pandas brute
+    assert "liste des versions FIFA introuvable" in str(exc_info.value)
+    assert sd.SoFIFA.read_versions is original             # restauré malgré l'échec
+
+
 # --- Centrage qualité -----------------------------------------------------
 
 def test_center_mean_is_zero():

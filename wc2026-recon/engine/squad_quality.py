@@ -129,23 +129,100 @@ def aggregate_squad_quality(squads: dict, player_ratings: dict[str, float],
 # Fetch live (réseau/Chrome) — isolé, patchable, dégradation propre.
 # ---------------------------------------------------------------------------
 
+# Colonnes candidates pour l'identifiant de version FIFA. `soccerdata.SoFIFA`
+# suppose en dur 'version_id' via `.set_index("version_id")` ; si la page
+# d'accueil SoFIFA a changé de structure (menus déroulants absents, page
+# bloquée/CAPTCHA/certificat…), ce nom de colonne peut ne plus exister DU TOUT
+# (DataFrame vide) -> on cherche parmi plusieurs candidats plutôt que de
+# supposer un nom fixe, et on échoue avec un message clair sinon.
+_VERSION_ID_COL_CANDIDATES = ("version_id", "id", "r", "version")
+
+
+def _select_id_column(df, candidates=_VERSION_ID_COL_CANDIDATES) -> str | None:
+    """Première colonne de `df` présente parmi `candidates` ; None si aucune.
+
+    Pur et testable sans réseau : c'est le point qui garantit qu'on n'assume
+    jamais un nom de colonne non vérifié.
+    """
+    for cand in candidates:
+        if cand in df.columns:
+            return cand
+    return None
+
+
+def _read_versions_robust(reader, max_age=1):
+    """Ré-implémentation résiliente de `SoFIFA.read_versions` (même scraping),
+    qui n'assume PAS que la colonne d'identifiant de version s'appelle
+    'version_id' : elle est recherchée parmi `_VERSION_ID_COL_CANDIDATES` une
+    fois les données réellement obtenues. Si la page d'accueil ne fournit plus
+    aucune colonne exploitable (site changé, bloqué, page d'erreur), on lève un
+    message diagnostique clair au lieu de laisser fuiter l'exception pandas
+    interne ("None of [...] are in the columns").
+    """
+    import re
+
+    import pandas as pd
+    from lxml import html
+    from soccerdata.sofifa import SO_FIFA_API
+
+    filepath = reader.data_dir / "index.html"
+    page = html.parse(reader.get(SO_FIFA_API, filepath, max_age))
+
+    rows = []
+    for i, edition_opt in enumerate(page.xpath("//header/section/p/select[1]/option")):
+        fifa_edition = edition_opt.text
+        edition_url = SO_FIFA_API + (edition_opt.get("value") or "")
+        edition_path = reader.data_dir / f"updates_{fifa_edition}.html"
+        edition_page = html.parse(
+            reader.get(edition_url, edition_path, max_age=max_age if i == 0 else None))
+        for update_opt in edition_page.xpath("//header/section/p/select[2]/option"):
+            m = re.search(r"r=(\d+)", update_opt.get("value") or "")
+            if not m:
+                continue
+            rows.append({"version_id": int(m.group(1)), "fifa_edition": fifa_edition,
+                        "update": update_opt.text})
+
+    df = pd.DataFrame(rows)
+    id_col = _select_id_column(df)
+    if id_col is None:
+        raise RuntimeError(
+            "SoFIFA : liste des versions FIFA introuvable (colonnes obtenues="
+            f"{df.columns.tolist()}, {len(df)} ligne(s)). La page d'accueil ne "
+            "renvoie plus la structure attendue (site changé, bloqué, ou page "
+            "d'erreur réseau/certificat) -> vérifier l'accès à sofifa.com."
+        )
+    return df.set_index(id_col).sort_index()
+
+
 def fetch_player_ratings(leagues=None, versions="latest") -> dict[str, float]:
     """Notes FIFA individuelles via SoFIFA (joueurs des grands championnats).
 
     Isolé et **patchable** par les tests. SoFIFA étant scrapé/fragile (cf. audit),
     toute erreur remonte à l'appelant (qui désactive le tilt qualité).
+
+    `SoFIFA.__init__` résout systématiquement les versions FIFA disponibles via
+    `read_versions()`, quel que soit `versions=`. Cette méthode suppose en dur
+    une colonne 'version_id' qui peut disparaître si SoFIFA change de structure
+    -> on la remplace temporairement par `_read_versions_robust` (même
+    scraping, colonne recherchée dynamiquement, échec diagnostiqué clairement),
+    le temps de la construction, puis on restaure l'original.
     """
     import soccerdata as sd
 
     attempts = ([{"leagues": leagues, "versions": versions}] if leagues is not None
                 else [{"versions": versions}, {}])
+    original_read_versions = sd.SoFIFA.read_versions
     last_err: Exception | None = None
-    for kwargs in attempts:
-        try:
-            df = sd.SoFIFA(**kwargs).read_player_ratings()
-            return player_ratings_to_dict(df)
-        except Exception as e:  # noqa: BLE001
-            last_err = e
+    try:
+        sd.SoFIFA.read_versions = _read_versions_robust
+        for kwargs in attempts:
+            try:
+                df = sd.SoFIFA(**kwargs).read_player_ratings()
+                return player_ratings_to_dict(df)
+            except Exception as e:  # noqa: BLE001
+                last_err = e
+    finally:
+        sd.SoFIFA.read_versions = original_read_versions
     raise RuntimeError(f"SoFIFA indisponible (scraping cassé en amont ?) : {last_err}")
 
 
