@@ -1,0 +1,22 @@
+# Reconnaissance des sources de données — Coupe du Monde 2026
+# Python 3.11+
+
+pandas>=2.1
+requests>=2.31
+python-dotenv>=1.0
+
+# Moteur de pronostics (Dixon-Coles MLE, Monte Carlo, métriques de calibration)
+scipy>=1.11
+matplotlib>=3.8
+
+# Tests (anti-fuite, couplage)
+pytest>=8.0
+
+# Couche joueur (probes D et E). Optionnels : si absents, le probe le consigne
+# proprement dans l'AuditRecord et le run continue.
+statsbombpy>=1.11
+soccerdata>=1.8
+
+# Parsing HTML pour les scrapers (Transfermarkt, fallback Elo)
+beautifulsoup4>=4.12
+lxml>=5.0
