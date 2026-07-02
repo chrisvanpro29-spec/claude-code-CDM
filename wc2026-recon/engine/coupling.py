@@ -63,7 +63,7 @@ def adjusted_lambdas(lam_home: float, lam_away: float,
 
     Deux apports **séparables** derrière le MÊME interrupteur, chacun centré :
       - forme (notes équipe : attaque/milieu/défense vs adversaire, via `ref`) ;
-      - qualité d'effectif (`qual_*`, scalaires déjà centrés/standardisés SoFIFA).
+      - qualité d'effectif (`qual_*`, scalaires déjà centrés/standardisés, dérivés FBref).
     On peut tourner forme seule (qual_* = None), qualité seule (notes_* = None),
     ou les deux — pour que l'ablation mesure chaque apport.
 

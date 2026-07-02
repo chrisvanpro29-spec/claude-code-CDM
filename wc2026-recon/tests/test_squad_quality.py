@@ -1,26 +1,24 @@
-"""Tests de la qualité d'effectif (centrage SoFIFA) et de son branchement couplage.
+"""Tests de la qualité d'effectif (dérivée FBref uniquement) et de son couplage.
 
-Couvre : centrage/standardisation (moyenne -> 0, au-dessus -> +, symétrie -> opposés,
-écart-type nul gardé) ; et le 4e tilt côté coupling (OFF neutralise, qualité seule
-fonctionne, qualité bornée, séparabilité forme/qualité).
+SoFIFA est abandonné (scraping cassé, confirmé) : la note de qualité est
+reconstruite depuis les composantes FBref (`player_data.components_per90_adjusted`),
+agrégée par sélection (minutes-pondérée, recalage Wikipédia↔FBref), puis centrée.
+
+Couvre : note joueur depuis composantes, agrégation (minutes, couverture,
+non-appariés), centrage/standardisation, bout-en-bout Wikipédia→FBref→note
+centrée sur des effectifs fictifs, et le 4e tilt côté coupling.
 """
 
 from __future__ import annotations
 
-import pandas as pd
 import pytest
 
 import config
 from engine import squad_quality as sq
 from engine import coupling
-from engine.player_form import TeamNotes
+from engine.player_form import TeamNotes, SquadPlayer
 
 REF = (0.0, 0.0, 0.0)
-
-
-# --- Reconstruction par joueur (note d'effectif reconstruite, pas lue) ------
-
-from engine.player_form import SquadPlayer
 
 
 def _squad(*names_minutes):
@@ -28,175 +26,74 @@ def _squad(*names_minutes):
             for n, m in names_minutes]
 
 
-def test_player_ratings_parser():
-    df = pd.DataFrame({"overall": [88, 84]}, index=["Mbappé", "Griezmann"])
-    assert sq.player_ratings_to_dict(df) == {"Mbappé": 88.0, "Griezmann": 84.0}
+def _components(player, nineties=10.0, **stats):
+    """Une entrée façon player_data.components_per90_adjusted (par 90, ajustée)."""
+    base = {"player": player, "competition": "Premier League",
+            "is_national": False, "nineties": nineties}
+    base.update(stats)
+    return base
 
+
+# --- Note joueur depuis les composantes FBref -------------------------------
+
+def test_player_quality_score_weights_components():
+    # buts/xG (poids 1.0) pèsent plus que passes clés (poids 0.4) à valeur égale.
+    scorer = sq.player_quality_score(_components("A", goals=1.0, xg=1.0))
+    passer = sq.player_quality_score(_components("B", key_passes=1.0, chances_created=1.0))
+    assert scorer > passer
+    expected = config.COMPONENT_WEIGHTS["goals"] * 1.0 + config.COMPONENT_WEIGHTS["xg"] * 1.0
+    assert scorer == pytest.approx(expected)
+
+
+def test_player_quality_score_ignores_missing_components():
+    # composante absente (ex. xg_against, jamais fabriqué par FBref) -> ignorée, pas de crash.
+    assert sq.player_quality_score(_components("A")) == 0.0
+
+
+def test_quality_scores_multi_competition_weighted_by_nineties():
+    # Un joueur vu dans 2 compétitions : le contexte le plus joué pèse plus.
+    view = [_components("A", nineties=9.0, goals=1.0),
+            _components("A", nineties=1.0, goals=0.0)]
+    scores = sq.quality_scores_from_components(view)
+    w_goals = config.COMPONENT_WEIGHTS["goals"]
+    assert scores["A"] == pytest.approx(w_goals * 1.0 * 0.9)   # 9/(9+1)
+
+
+# --- Agrégation par sélection (recalage Wikipédia↔FBref) --------------------
 
 def test_aggregate_minutes_weighted():
     squads = {"France": _squad(("Mbappé", 90), ("Sub", 0))}
-    ratings = {"Mbappé": 90.0, "Sub": 70.0}
-    out, _ = sq.aggregate_squad_quality(squads, ratings, min_players=1)
-    # titulaire (90 min) domine le remplaçant (0 min) -> proche de 90, pas 80
-    assert out["France"] == pytest.approx(90.0)
+    scores = {"Mbappé": 3.0, "Sub": 1.0}
+    out, _ = sq.aggregate_squad_quality(squads, scores, min_players=1)
+    # titulaire (90 min) domine le remplaçant (0 min) -> 3.0, pas 2.0
+    assert out["France"] == pytest.approx(3.0)
 
 
 def test_aggregate_skips_undercovered_nation():
     squads = {"Tuvalu": _squad(("X", 90))}                 # 1 seul joueur connu
-    ratings = {"X": 70.0}
-    out, _ = sq.aggregate_squad_quality(squads, ratings, min_players=6)
+    scores = {"X": 2.0}
+    out, _ = sq.aggregate_squad_quality(squads, scores, min_players=6)
     assert "Tuvalu" not in out                              # couverture insuffisante -> omise
 
 
-def test_aggregate_logs_unmatched():
-    squads = {"France": _squad(("Mbappé", 90), ("Inconnu", 90))}
-    ratings = {"Mbappé": 90.0}
-    out, unmatched = sq.aggregate_squad_quality(squads, ratings, min_players=1)
-    assert any("Inconnu" in u for u in unmatched)           # non-apparié loggé, jamais deviné
+def test_aggregate_logs_unmatched_never_guesses():
+    squads = {"France": _squad(("Mbappé", 90), ("Inconnu Total", 90))}
+    scores = {"Mbappé": 3.0}
+    out, unmatched = sq.aggregate_squad_quality(squads, scores, min_players=1)
+    assert any("Inconnu Total" in u for u in unmatched)     # loggé, jamais deviné
+    assert out["France"] == pytest.approx(3.0)              # calculé sur les appariés seuls
 
 
-def test_reconstruct_then_center_uses_players_not_team(monkeypatch):
-    """Bout en bout (sans réseau) : note d'effectif reconstruite depuis les joueurs."""
-    squads = {
-        "France":  _squad(*[(f"FR{i}", 90) for i in range(8)]),
-        "Germany": _squad(*[(f"DE{i}", 90) for i in range(8)]),
-    }
-    ratings = {**{f"FR{i}": 88.0 for i in range(8)},        # France plus forte
-               **{f"DE{i}": 80.0 for i in range(8)}}
-
-    def fake_player_ratings(leagues=None, versions="latest"):
-        return ratings
-    monkeypatch.setattr(sq, "fetch_player_ratings", fake_player_ratings)
-
-    centered = sq.centered_quality(squads)
-    assert set(centered) == {"France", "Germany"}           # des sélections, pas des clubs
-    assert centered["France"] > 0 > centered["Germany"]     # France au-dessus de la moyenne
-    assert centered["France"] == pytest.approx(-centered["Germany"])  # symétrie (2 équipes)
+def test_aggregate_reconciles_wikipedia_fbref_accents():
+    # Wikipédia : accents ; FBref : graphie sans accents -> recalage exact normalisé.
+    squads = {"France": _squad(("Kylian Mbappé", 90), ("Jules Koundé", 90))}
+    scores = {"Kylian Mbappe": 2.0, "Jules Kounde": 1.0}
+    out, unmatched = sq.aggregate_squad_quality(squads, scores, min_players=2)
+    assert unmatched == []
+    assert out["France"] == pytest.approx(1.5)
 
 
-def test_centered_quality_empty_without_squads():
-    assert sq.centered_quality({}) == {}                    # pas d'effectif -> pas de note fabriquée
-
-
-# --- Résilience au schéma SoFIFA (colonne 'version_id' absente/renommée) ---
-#
-# Régression : SoFIFA.__init__ (soccerdata) appelle inconditionnellement
-# read_versions(), qui suppose en dur .set_index("version_id"). Si la page
-# d'accueil SoFIFA ne renvoie plus cette structure (site changé, bloqué, page
-# d'erreur), soccerdata lève un KeyError pandas peu lisible
-# ("None of ['version_id'] are in the columns"). On vérifie que notre couche
-# (1) retrouve la colonne d'identifiant sans supposer un nom fixe, et
-# (2) ne plante jamais : elle échoue avec un message diagnostique clair.
-
-def test_select_id_column_finds_alternate_name():
-    """La colonne n'est PAS 'version_id' mais un candidat connu -> retrouvée."""
-    df = pd.DataFrame({"id": [251, 250], "fifa_edition": ["27", "26"]})
-    assert sq._select_id_column(df) == "id"
-
-
-def test_select_id_column_prefers_first_candidate_present():
-    df = pd.DataFrame({"version_id": [251], "id": [999]})
-    assert sq._select_id_column(df) == "version_id"
-
-
-def test_select_id_column_none_when_no_candidate_present():
-    """Colonne optionnelle absente -> None, jamais d'exception (pas de crash)."""
-    df = pd.DataFrame({"fifa_edition": ["27"], "update": ["Jan 1"]})
-    assert sq._select_id_column(df) is None
-
-
-def test_read_versions_robust_succeeds_on_valid_page(monkeypatch):
-    """Chemin heureux : page exploitable -> DataFrame indexé, aucune exception.
-
-    (La flexibilité sur le NOM de la colonne d'identifiant est testée
-    précisément par `test_select_id_column_*` ci-dessus, au niveau de la
-    fonction pure ; ici on vérifie l'intégration bout en bout du scraping.)
-    """
-    import soccerdata.sofifa as sofifa_mod
-
-    class FakeOpt:
-        def __init__(self, text, value):
-            self.text = text
-            self._value = value
-
-        def get(self, attr):
-            return self._value if attr == "value" else None
-
-    class FakePage:
-        def __init__(self, opts):
-            self._opts = opts
-
-        def xpath(self, expr):
-            if "select[1]" in expr:
-                return self._opts.get("editions", [])
-            if "select[2]" in expr:
-                return self._opts.get("updates", [])
-            return []
-
-    edition_opt = FakeOpt("27", "/path?ed=27")
-    update_opt = FakeOpt("Jan 2026", "/path?r=999")
-    pages = {
-        sofifa_mod.SO_FIFA_API: FakePage({"editions": [edition_opt]}),
-    }
-
-    def fake_html_parse(reader):
-        return pages.get(reader, FakePage({"updates": [update_opt]}))
-
-    class FakeReader:
-        data_dir = __import__("pathlib").Path("/tmp")
-
-        def get(self, url, filepath, max_age=None):
-            return url  # sert de clé pour fake_html_parse
-
-    monkeypatch.setattr(sofifa_mod.html, "parse", fake_html_parse)
-    df = sq._read_versions_robust(FakeReader())
-    assert df.index.name in sq._VERSION_ID_COL_CANDIDATES
-    assert 999 in df.index
-
-
-def test_read_versions_robust_raises_clear_error_when_unusable(monkeypatch):
-    """Page bloquée/vide (comme un interstitiel de certificat) -> message clair,
-    jamais l'exception pandas interne brute."""
-    import soccerdata.sofifa as sofifa_mod
-
-    class EmptyPage:
-        def xpath(self, expr):
-            return []   # aucun <select> -> aucune ligne extraite
-
-    class FakeReader:
-        data_dir = __import__("pathlib").Path("/tmp")
-
-        def get(self, url, filepath, max_age=None):
-            return None
-
-    monkeypatch.setattr(sofifa_mod.html, "parse", lambda reader: EmptyPage())
-
-    with pytest.raises(RuntimeError, match="liste des versions FIFA introuvable"):
-        sq._read_versions_robust(FakeReader())
-
-
-def test_fetch_player_ratings_degrades_cleanly_not_raw_pandas_error(monkeypatch):
-    """Bout en bout : la panne de version-resolution SoFIFA ne fait jamais
-    fuiter l'exception pandas interne ; le message reste diagnostique, et
-    read_versions est restauré après l'appel (pas d'effet de bord durable)."""
-    import soccerdata as sd
-
-    original = sd.SoFIFA.read_versions
-
-    def always_broken(self, max_age=1):
-        raise RuntimeError("SoFIFA : liste des versions FIFA introuvable (colonnes obtenues=[])")
-
-    # Simule le monkeypatch interne échouant systématiquement (page inexploitable).
-    monkeypatch.setattr(sq, "_read_versions_robust", always_broken)
-
-    with pytest.raises(RuntimeError) as exc_info:
-        sq.fetch_player_ratings()
-    assert "None of" not in str(exc_info.value)          # pas de fuite pandas brute
-    assert "liste des versions FIFA introuvable" in str(exc_info.value)
-    assert sd.SoFIFA.read_versions is original             # restauré malgré l'échec
-
-
-# --- Centrage qualité -----------------------------------------------------
+# --- Centrage qualité -------------------------------------------------------
 
 def test_center_mean_is_zero():
     centered = sq.center_quality({"A": 80, "B": 82, "C": 78})  # moyenne = 80 = A
@@ -216,6 +113,52 @@ def test_center_zero_std_no_div_zero():
 
 def test_center_empty():
     assert sq.center_quality({}) == {}
+
+
+# --- Bout-en-bout : Wikipédia → FBref → note centrée ------------------------
+
+def test_end_to_end_wikipedia_fbref_centered(monkeypatch):
+    """Effectifs fictifs (noms façon Wikipédia, accents) + composantes FBref
+    simulées (graphies FBref) -> notes reconstruites, recalées, centrées."""
+    squads = {
+        # 6 joueurs chacun (= MIN_PLAYERS_FOR_QUALITY), accents côté Wikipédia.
+        "France": _squad(*[(f"Attaquant-{i} Doué", 90) for i in range(6)]),
+        "Germany": _squad(*[(f"Verteidiger-{i} Groß", 90) for i in range(6)]),
+        # Sélection sous-couverte : 1 seul joueur dans FBref -> doit être omise.
+        "Tuvalu": _squad(("Seul Joueur", 90), ("Fantôme A", 90), ("Fantôme B", 90),
+                        ("Fantôme C", 90), ("Fantôme D", 90), ("Fantôme E", 90)),
+    }
+
+    # Vivier FBref simulé : mêmes joueurs, graphies sans accents (recalage requis).
+    # France : score joueur = 0.8·1.0 + 0.7·1.0 = 1.5 ;
+    # Germany : score joueur = 1.0·0.7 + 0.5·0.7 = 1.05 < 1.5.
+    fake_view = (
+        [_components(f"Attaquant-{i} Doue", goals=0.8, xg=0.7) for i in range(6)]
+        + [_components(f"Verteidiger-{i} Gross", tackles=1.0, interceptions=0.5)
+           for i in range(6)]
+        + [_components("Seul Joueur", goals=0.5)]
+    )
+    monkeypatch.setattr(sq, "fetch_player_components", lambda **kw: fake_view)
+
+    centered = sq.centered_quality(squads)
+
+    assert set(centered) == {"France", "Germany"}            # Tuvalu omise (couverture)
+    assert centered["France"] > 0 > centered["Germany"]      # 1.5 > moyenne > 1.05
+    assert centered["France"] == pytest.approx(-centered["Germany"])  # 2 équipes -> symétrie
+
+
+def test_centered_quality_empty_without_squads():
+    assert sq.centered_quality({}) == {}                    # pas d'effectif -> pas de note fabriquée
+
+
+def test_fetch_failure_propagates_for_walk_forward_to_catch(monkeypatch):
+    """FBref indisponible -> exception claire (le walk-forward la capte et
+    neutralise le tilt qualité, contrat de dégradation existant)."""
+    def broken(**kw):
+        raise RuntimeError("FBref : aucune composante joueur récupérée")
+    monkeypatch.setattr(sq, "fetch_player_components", broken)
+    with pytest.raises(RuntimeError, match="aucune composante"):
+        sq.centered_quality({"France": _squad(("X", 90))})
 
 
 # --- Branchement couplage (qualité) ---------------------------------------

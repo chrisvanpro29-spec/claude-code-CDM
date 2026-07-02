@@ -108,7 +108,7 @@ titre. Objectif : **égaler le marché et être bien calibré**, pas parier. Le 
 | `engine/league_strength.py` | Coefficients de force des ligues (§3.3) |
 | `engine/player_form.py` | Module 2 — fonction-porte `note_joueur` + agrégation (shrinkage, minutes) |
 | `engine/player_data.py` | Alimentation FBref des composantes par 90 (aplatissement, /90, ajustement ligue) |
-| `engine/squad_quality.py` | Qualité d'effectif reconstruite des notes joueur SoFIFA, agrégée par sélection puis centrée (4e tilt) |
+| `engine/squad_quality.py` | Qualité d'effectif dérivée des composantes FBref (SoFIFA abandonné : scraping cassé), agrégée par sélection puis centrée (4e tilt) |
 | `engine/squads.py` | Ingestion des effectifs CDM 2026 (Wikipédia) : parsing, alignement noms de nations, recalage noms joueur |
 | `engine/coupling.py` | Tilt borné des λ : forme + milieu + qualité, séparables (interrupteur + poids) |
 | `engine/simulate.py` | Module 3 — Monte Carlo du tournoi (format réel 48 équipes) |
@@ -134,7 +134,7 @@ CDM 2026 sont figés (annoncés le 2 juin). `data/squads.json` (`{nation: [nom, 
 noms alignés sur `results.csv`) alimente à la fois `squad_quality.centered_quality`
 et l'agrégation de forme par sélection (`player_form.team_notes`, via
 `validation.walk_forward.load_squads`). Le recalage des noms joueur entre
-Wikipédia, SoFIFA et FBref (normalisation + correspondance exacte puis approchée)
+Wikipédia et FBref (normalisation + correspondance exacte puis approchée)
 ne devine jamais : les non-appariés sont loggés.
 
 **Collecteur marché (chronosensible)** : capture, avant chaque match, la ligne 1X2

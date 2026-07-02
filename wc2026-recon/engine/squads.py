@@ -7,7 +7,7 @@ Les effectifs sont figés (annoncés le 2 juin) : ingestion PONCTUELLE, pas un f
 récurrent (contrairement au collecteur de cotes). `ingest(refresh=True)` re-tire
 en cas de remplacement sur blessure.
 
-Recalage des noms joueur (Wikipédia ↔ SoFIFA ↔ FBref) : `normalize_name` (sans
+Recalage des noms joueur (Wikipédia ↔ FBref) : `normalize_name` (sans
 accents, minuscules) + `reconcile_names` (exact puis approché, seuil élevé) — les
 non-appariés sont renvoyés pour être loggés, jamais devinés.
 """
@@ -150,7 +150,7 @@ def canonical_teams() -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Recalage des noms joueur (Wikipédia ↔ SoFIFA ↔ FBref)
+# Recalage des noms joueur (Wikipédia ↔ FBref)
 # ---------------------------------------------------------------------------
 
 def normalize_name(name: str) -> str:

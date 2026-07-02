@@ -105,7 +105,7 @@ def run() -> dict:
     # Échelle des composantes ajustée UNE fois sur la population pré-tournoi (sans fuite).
     normalizer = ComponentNormalizer.fit(store, config.NORMALIZER_FIT_CUTOFF)
 
-    # Qualité d'effectif (reconstruite par joueur via SoFIFA, centrée) — dégradation
+    # Qualité d'effectif (dérivée des composantes FBref, centrée) — dégradation
     # propre si indisponible (besoin des effectifs ; sans eux, pas de reconstruction).
     quality: dict[str, float] = {}
     try:
@@ -147,7 +147,7 @@ def run() -> dict:
         p_off = model.match_probabilities(home, away, neutral, lambdas=(lam_h, lam_a))
 
         # Couche ON : notes équipe à date_ref (fenêtre glissante via note_joueur)
-        # + qualité d'effectif centrée (SoFIFA). Chaque apport est séparable.
+        # + qualité d'effectif centrée (FBref). Chaque apport est séparable.
         nh = team_notes(squads.get(home, []), date_ref, store, normalizer) if squads else None
         na = team_notes(squads.get(away, []), date_ref, store, normalizer) if squads else None
         ref = reference_at(date_ref) if (nh is not None and na is not None) else None

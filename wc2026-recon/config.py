@@ -83,7 +83,7 @@ NORMALIZER_FIT_CUTOFF = WC2026_START     # échelle ajustée sur la population p
 PLAYER_TILT_WEIGHT = 0.15               # w : poids borné
 PLAYER_TILT_CLIP = 1.0                  # |tilt| <= 1 -> |variation λ| <= 15 %
 MID_TILT_WEIGHT = 0.5                   # κ : poids du différentiel de milieu (correction 2)
-QUALITY_TILT_WEIGHT = 0.5               # poids du différentiel de qualité d'effectif (SoFIFA, centré)
+QUALITY_TILT_WEIGHT = 0.5               # poids du différentiel de qualité d'effectif (FBref, centré)
 
 # ---------------------------------------------------------------------------
 # Module 3 — Monte Carlo
