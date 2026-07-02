@@ -248,6 +248,48 @@ def test_empty_rows_treated_as_failure(monkeypatch):
     assert calls.count("L") == 1 + sq.FBREF_MAX_RETRIES
 
 
+# --- Mode diagnostic (« 0 équipes notées » : (a) fetch ou (b) recalage ?) ----
+
+def test_diagnose_verdict_a_when_pool_empty(monkeypatch):
+    """Vivier FBref vide (fetch en échec) -> verdict (a), erreur rapportée."""
+    def broken(**kw):
+        raise RuntimeError("FBref : aucune composante joueur récupérée")
+    monkeypatch.setattr(sq, "fetch_player_components", broken)
+    squads = {"France": _squad(("Kylian Mbappé", 90))}
+    report = sq.diagnose_nation("France", squads=squads)
+    assert report["pool_size"] == 0
+    assert report["verdict"].startswith("(a)")
+    assert "aucune composante" in report["fetch_error"]
+
+
+def test_diagnose_verdict_b_when_names_dont_match():
+    """Vivier fourni mais recalage en échec -> verdict (b), non-appariés listés."""
+    squads = {"France": _squad(("Kylian Mbappé", 90), ("Jules Koundé", 90))}
+    view = [_components(f"Unrelated Player {i}") for i in range(50)]
+    report = sq.diagnose_nation("France", squads=squads, view=view)
+    assert report["pool_size"] == 50 and report["n_matched"] == 0
+    assert report["verdict"].startswith("(b)")
+    assert set(report["unmatched"]) == {"Kylian Mbappé", "Jules Koundé"}
+
+
+def test_diagnose_ok_when_enough_matches():
+    """Assez d'appariements -> verdict OK (le problème serait en aval)."""
+    names = [f"Joueur-{i} Doué" for i in range(sq.MIN_PLAYERS_FOR_QUALITY)]
+    squads = {"France": _squad(*[(n, 90) for n in names])}
+    view = [_components(n.replace("é", "e")) for n in names]   # graphies FBref
+    report = sq.diagnose_nation("France", squads=squads, view=view)
+    assert report["n_matched"] == sq.MIN_PLAYERS_FOR_QUALITY
+    assert report["n_unmatched"] == 0
+    assert report["verdict"].startswith("OK")
+
+
+def test_diagnose_missing_squad_reported():
+    report = sq.diagnose_nation("Atlantis", squads={"France": _squad(("X", 90))},
+                                view=[_components("X")])
+    assert report["squad_size"] == 0
+    assert "effectif absent" in report["verdict"]
+
+
 # --- Branchement couplage (qualité) ---------------------------------------
 
 def test_quality_off_is_identity():

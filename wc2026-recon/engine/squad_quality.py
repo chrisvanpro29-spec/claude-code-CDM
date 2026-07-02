@@ -239,3 +239,100 @@ def centered_quality(squads: dict, leagues: dict[str, str] | None = None,
         return {}
     return center_quality(reconstruct_team_quality(squads, leagues=leagues,
                                                    seasons=seasons))
+
+
+# ---------------------------------------------------------------------------
+# Mode diagnostic — « 0 équipes notées » : (a) stats FBref pas récupérées, ou
+# (b) recalage des noms Wikipédia↔FBref en échec ? Aucun changement de
+# comportement du chemin de scoring : lecture seule + rapport.
+# ---------------------------------------------------------------------------
+
+def diagnose_nation(nation: str = "France", squads: dict | None = None,
+                    view: list[dict] | None = None,
+                    leagues: dict[str, str] | None = None,
+                    seasons: str | None = None) -> dict:
+    """Diagnostique la chaîne effectif Wikipédia -> stats FBref pour UNE sélection.
+
+    Retourne (et affiche) : taille du vivier FBref (par compétition), taille de
+    l'effectif, joueurs appariés vs non appariés (liste complète des échecs),
+    échantillon de noms FBref pour inspection visuelle, et un verdict :
+      (a) vivier FBref vide/maigre -> les stats ne sont pas récupérées ;
+      (b) vivier fourni mais appariements ~0 -> le recalage de noms échoue.
+
+    `view` peut être injecté (tests / réutilisation d'un tirage déjà fait) ;
+    sinon on tire via fetch_player_components (mêmes délais/retries que le
+    chemin normal).
+    """
+    from .squads import reconcile_names
+
+    if squads is None:
+        from .squads import load_squad_players
+        squads = load_squad_players()
+
+    report: dict = {"nation": nation}
+    print(f"[diagnose] sélection ciblée : {nation}")
+
+    # --- Étape 1 : le vivier FBref -------------------------------------------
+    fetch_error: str | None = None
+    if view is None:
+        try:
+            view = fetch_player_components(leagues=leagues, seasons=seasons)
+        except Exception as e:  # noqa: BLE001
+            fetch_error = f"{type(e).__name__}: {e}"
+            view = []
+    pool_names = sorted({str(r["player"]) for r in view if r.get("player")})
+    by_comp: dict[str, int] = {}
+    for r in view:
+        by_comp[str(r.get("competition"))] = by_comp.get(str(r.get("competition")), 0) + 1
+    report.update({"pool_size": len(pool_names), "pool_by_competition": by_comp,
+                   "fetch_error": fetch_error})
+    print(f"[diagnose] vivier FBref : {len(pool_names)} joueurs distincts, "
+          f"par compétition : {by_comp or '∅'}"
+          + (f" | erreur fetch : {fetch_error}" if fetch_error else ""))
+    if pool_names:
+        print(f"[diagnose] échantillon de noms FBref (graphie réelle) : {pool_names[:10]}")
+
+    # --- Étape 2 : le recalage pour la sélection ------------------------------
+    squad = squads.get(nation, [])
+    squad_names = [getattr(sp, "player", None) for sp in squad]
+    squad_names = [n for n in squad_names if n]
+    report["squad_size"] = len(squad_names)
+    if not squad_names:
+        print(f"[diagnose] ⚠️ effectif {nation} vide/introuvable dans squads.json "
+              "-> lancer ingest_squads.py d'abord.")
+        report["verdict"] = "effectif absent (ni (a) ni (b) : squads.json manquant)"
+        return report
+
+    matched, unmatched = reconcile_names(squad_names, pool_names)
+    report.update({"n_matched": len(matched), "n_unmatched": len(unmatched),
+                   "unmatched": unmatched,
+                   "matched_examples": dict(list(matched.items())[:5])})
+    print(f"[diagnose] effectif {nation} : {len(squad_names)} joueurs | "
+          f"appariés FBref : {len(matched)} | non appariés : {len(unmatched)}")
+    if matched:
+        print(f"[diagnose] exemples d'appariements réussis : "
+              f"{dict(list(matched.items())[:5])}")
+    if unmatched:
+        print(f"[diagnose] noms NON appariés ({len(unmatched)}) : {unmatched}")
+
+    # --- Verdict ---------------------------------------------------------------
+    if not pool_names:
+        verdict = ("(a) stats FBref PAS récupérées : vivier vide"
+                   + (f" ({fetch_error})" if fetch_error else ""))
+    elif len(matched) < MIN_PLAYERS_FOR_QUALITY:
+        verdict = (f"(b) recalage de noms en échec : vivier de {len(pool_names)} "
+                   f"joueurs mais seulement {len(matched)} apparié(s) "
+                   f"(< {MIN_PLAYERS_FOR_QUALITY} requis) -> sélection omise")
+    else:
+        verdict = (f"OK : {len(matched)} appariés (>= {MIN_PLAYERS_FOR_QUALITY}) — "
+                   "la sélection devrait être notée ; si '0 équipes notées' "
+                   "persiste, le problème est en aval de l'agrégation")
+    report["verdict"] = verdict
+    print(f"[diagnose] VERDICT : {verdict}")
+    return report
+
+
+if __name__ == "__main__":
+    import sys
+
+    diagnose_nation(sys.argv[1] if len(sys.argv) > 1 else "France")
