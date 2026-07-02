@@ -161,6 +161,93 @@ def test_fetch_failure_propagates_for_walk_forward_to_catch(monkeypatch):
         sq.centered_quality({"France": _squad(("X", 90))})
 
 
+# --- Anti rate-limit FBref (délai inter-ligues, retry/backoff, skip) ---------
+
+def _patch_fbref(monkeypatch, behaviour):
+    """Patch player_data.fetch_player_season_components + time.sleep (enregistrés).
+
+    `behaviour(league_key, call_count)` -> list[dict] (rows) ou lève.
+    Retourne (sleeps, calls) accumulés.
+    """
+    from engine import player_data
+
+    sleeps: list[float] = []
+    calls: list[str] = []
+
+    def fake_fetch(leagues, seasons, competition_label, is_national):
+        calls.append(leagues)
+        return behaviour(leagues, calls.count(leagues))
+
+    monkeypatch.setattr(player_data, "fetch_player_season_components", fake_fetch)
+    monkeypatch.setattr(player_data, "components_per90_adjusted", lambda rows: rows)
+    monkeypatch.setattr(sq.time, "sleep", lambda s: sleeps.append(s))
+    return sleeps, calls
+
+
+def test_delay_between_leagues(monkeypatch):
+    """Un délai explicite est appliqué ENTRE les ligues (pas avant la 1re)."""
+    sleeps, calls = _patch_fbref(
+        monkeypatch, lambda lg, n: [{"player": f"P-{lg}", "nineties": 10.0}])
+    leagues = {"L1": "Ligue 1", "L2": "Premier League", "L3": "La Liga"}
+    view = sq.fetch_player_components(leagues=leagues, seasons="2526")
+    assert len(view) == 3
+    assert sleeps == [sq.FBREF_LEAGUE_DELAY_S] * 2          # 3 ligues -> 2 pauses
+    assert sq.FBREF_LEAGUE_DELAY_S >= 5.0                    # « plusieurs secondes »
+
+
+def test_league_failure_retried_with_backoff_then_skipped(monkeypatch):
+    """Une ligue en échec permanent est réessayée avec backoff puis SAUTÉE —
+    sans bloquer les autres ligues."""
+    def behaviour(lg, n):
+        if lg == "BAD":
+            raise ConnectionError("Could not retrieve page content (CAPTCHA)")
+        return [{"player": f"P-{lg}", "nineties": 10.0}]
+
+    sleeps, calls = _patch_fbref(monkeypatch, behaviour)
+    view = sq.fetch_player_components(
+        leagues={"OK1": "Ligue 1", "BAD": "Serie A", "OK2": "La Liga"}, seasons="2526")
+
+    assert {r["player"] for r in view} == {"P-OK1", "P-OK2"}     # BAD sautée, autres OK
+    assert calls.count("BAD") == 1 + sq.FBREF_MAX_RETRIES        # retries épuisés
+    # Backoff : attentes croissantes (base, base*2, …) présentes dans les sleeps.
+    expected_backoffs = [sq.FBREF_BACKOFF_BASE_S * (2 ** k)
+                         for k in range(sq.FBREF_MAX_RETRIES)]
+    for wait in expected_backoffs:
+        assert wait in sleeps
+
+
+def test_transient_failure_recovers_on_retry(monkeypatch):
+    """Échec transitoire (1er appel) -> le retry suffit, la ligue est gardée."""
+    def behaviour(lg, n):
+        if n == 1:
+            raise ConnectionError("IP block temporaire")
+        return [{"player": f"P-{lg}", "nineties": 10.0}]
+
+    sleeps, calls = _patch_fbref(monkeypatch, behaviour)
+    view = sq.fetch_player_components(leagues={"L": "Ligue 1"}, seasons="2526")
+    assert [r["player"] for r in view] == ["P-L"]
+    assert calls.count("L") == 2                              # échec puis succès
+
+
+def test_all_leagues_failing_raises_clear_error(monkeypatch):
+    """Toutes les ligues en échec -> erreur claire (captée par le walk-forward)."""
+    def behaviour(lg, n):
+        raise ConnectionError("CAPTCHA")
+
+    _patch_fbref(monkeypatch, behaviour)
+    with pytest.raises(RuntimeError, match="aucune composante joueur récupérée"):
+        sq.fetch_player_components(leagues={"A": "Ligue 1", "B": "La Liga"},
+                                   seasons="2526")
+
+
+def test_empty_rows_treated_as_failure(monkeypatch):
+    """[] (tous les stat_types en échec côté player_data) = échec -> retry puis skip."""
+    sleeps, calls = _patch_fbref(monkeypatch, lambda lg, n: [])
+    with pytest.raises(RuntimeError):
+        sq.fetch_player_components(leagues={"L": "Ligue 1"}, seasons="2526")
+    assert calls.count("L") == 1 + sq.FBREF_MAX_RETRIES
+
+
 # --- Branchement couplage (qualité) ---------------------------------------
 
 def test_quality_off_is_identity():

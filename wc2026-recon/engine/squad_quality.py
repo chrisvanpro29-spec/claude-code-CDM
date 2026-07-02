@@ -26,6 +26,7 @@ les favoris, pauvre pour les petites nations (repli).
 from __future__ import annotations
 
 import statistics
+import time
 
 import config
 
@@ -157,32 +158,64 @@ def aggregate_squad_quality(squads: dict, player_scores: dict[str, float],
 # Fetch live FBref (réseau/Chrome) — isolé, patchable, dégradation propre.
 # ---------------------------------------------------------------------------
 
+# Anti rate-limit FBref : tirer plusieurs grandes ligues à la suite déclenche
+# CAPTCHA / blocage IP ("Could not retrieve page content"). Le problème vient de
+# la FRÉQUENCE des requêtes, pas du code métier -> on espace explicitement les
+# appels par ligue, et on réessaie avec backoff avant de sauter une ligue.
+FBREF_LEAGUE_DELAY_S = 8.0     # pause entre deux ligues (5-10 s recommandé)
+FBREF_MAX_RETRIES = 2          # ré-essais par ligue après le 1er échec
+FBREF_BACKOFF_BASE_S = 20.0    # attente avant retry, doublée à chaque échec
+
+
+def _fetch_league_components(player_data, league_key: str, competition_label: str,
+                             seasons) -> list[dict]:
+    """Une ligue, avec retries + backoff. Renvoie [] si toujours en échec
+    (loggé) : l'échec d'une ligue ne bloque jamais les autres."""
+    last_err: Exception | None = None
+    for attempt in range(1 + FBREF_MAX_RETRIES):
+        if attempt > 0:
+            wait = FBREF_BACKOFF_BASE_S * (2 ** (attempt - 1))
+            print(f"[quality] {league_key} : échec ({type(last_err).__name__}), "
+                  f"retry {attempt}/{FBREF_MAX_RETRIES} dans {wait:.0f}s…")
+            time.sleep(wait)
+        try:
+            rows = player_data.fetch_player_season_components(
+                leagues=league_key, seasons=seasons,
+                competition_label=competition_label, is_national=False)
+            if rows:  # [] = tous les stat_types ont échoué -> traité comme un échec
+                return player_data.components_per90_adjusted(rows)
+            last_err = RuntimeError("aucune ligne renvoyée (stat_types tous en échec)")
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+    print(f"[quality] {league_key} : abandonné après {1 + FBREF_MAX_RETRIES} "
+          f"tentatives ({type(last_err).__name__}: {last_err}) -> ligue sautée.")
+    return []
+
+
 def fetch_player_components(leagues: dict[str, str] | None = None,
                             seasons: str | None = None) -> list[dict]:
     """Composantes par 90 ajustées, tous joueurs des championnats interrogés.
 
     Isolé et **patchable** par les tests. FBref étant lent/rate-limité (cf.
-    audit), toute erreur remonte à l'appelant (qui désactive le tilt qualité).
-    Un championnat qui échoue est sauté (les autres suffisent) ; si TOUS
-    échouent, on lève avec le dernier diagnostic.
+    audit), les appels par ligue sont espacés de FBREF_LEAGUE_DELAY_S et chaque
+    ligue est réessayée avec backoff avant d'être sautée (loggée) — l'échec
+    d'une ligue ne bloque jamais les autres. Si TOUTES échouent, on lève une
+    erreur claire (l'appelant désactive le tilt qualité).
     """
     from . import player_data
 
     leagues = leagues if leagues is not None else QUALITY_LEAGUES
     seasons = seasons if seasons is not None else QUALITY_SEASONS
     view: list[dict] = []
-    last_err: Exception | None = None
-    for league_key, competition_label in leagues.items():
-        try:
-            rows = player_data.fetch_player_season_components(
-                leagues=league_key, seasons=seasons,
-                competition_label=competition_label, is_national=False)
-            view.extend(player_data.components_per90_adjusted(rows))
-        except Exception as e:  # noqa: BLE001
-            last_err = e
+    for i, (league_key, competition_label) in enumerate(leagues.items()):
+        if i > 0:
+            time.sleep(FBREF_LEAGUE_DELAY_S)  # espacement anti-CAPTCHA entre ligues
+        view.extend(_fetch_league_components(player_data, league_key,
+                                             competition_label, seasons))
     if not view:
-        raise RuntimeError(f"FBref : aucune composante joueur récupérée "
-                          f"(dernier échec : {last_err})")
+        raise RuntimeError(
+            f"FBref : aucune composante joueur récupérée sur {len(leagues)} "
+            "ligue(s) (rate-limit/CAPTCHA/IP block ? réessayer plus tard)")
     return view
 
 
